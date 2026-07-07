@@ -13,6 +13,7 @@ The real values exist locally and work normally. Only what YOU see is censored; 
 Rules:
 1. NEVER ask the user to paste a secret, and never try to reconstruct one.
 2. Reference secrets indirectly, by name:
+   - Preferred: if an MCP tool named "run" (from llm-redact-proxy) is available, call it with {{<NAME>}} placeholders - it substitutes the real value locally and returns redacted output.
    - Shell: use the environment variable "$<NAME>", or read it at runtime, e.g. "$(grep '^<NAME>=' secrets.local | cut -d= -f2-)". The value resolves locally when the command executes; you never need to see it.
    - Code: read process.env.<NAME> / os.environ["<NAME>"] or a gitignored config file. Never hardcode a literal secret.
 3. If a tool output contains [REDACTED:...], the command DID run with the real value; treat the masking as cosmetic. Judge success by exit codes and surrounding output, not by the masked text.

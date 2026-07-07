@@ -31,13 +31,15 @@ export function parseDotEnv(text) {
   return vars;
 }
 
-export function loadConfig({ env = process.env, cwd = process.cwd() } = {}) {
+export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpstream = true } = {}) {
   let fileVars = {};
   const dotEnvPath = path.join(cwd, '.env');
   if (fs.existsSync(dotEnvPath)) {
     fileVars = parseDotEnv(fs.readFileSync(dotEnvPath, 'utf8'));
   }
-  const get = (key) => env[key] ?? fileVars[key] ?? DEFAULTS[key];
+  // Empty string counts as unset so wrappers can explicitly blank a var.
+  const pick = (v) => (v !== undefined && v !== '' ? v : undefined);
+  const get = (key) => pick(env[key]) ?? pick(fileVars[key]) ?? DEFAULTS[key];
 
   const listenAddr = get('LISTEN_ADDR');
   const colon = listenAddr.lastIndexOf(':');
@@ -58,12 +60,15 @@ export function loadConfig({ env = process.env, cwd = process.cwd() } = {}) {
   }
 
   const upstreamRaw = get('UPSTREAM_URL');
-  if (!upstreamRaw) {
+  if (!upstreamRaw && requireUpstream) {
     throw new Error('UPSTREAM_URL is required (the vendor endpoint to forward redacted requests to)');
   }
-  const upstreamUrl = new URL(upstreamRaw);
-  if (upstreamUrl.protocol !== 'https:' && upstreamUrl.protocol !== 'http:') {
-    throw new Error(`UPSTREAM_URL must be http(s), got "${upstreamUrl.protocol}"`);
+  let upstreamUrl = null;
+  if (upstreamRaw) {
+    upstreamUrl = new URL(upstreamRaw);
+    if (upstreamUrl.protocol !== 'https:' && upstreamUrl.protocol !== 'http:') {
+      throw new Error(`UPSTREAM_URL must be http(s), got "${upstreamUrl.protocol}"`);
+    }
   }
 
   const upstreamAuth = get('UPSTREAM_AUTH');
