@@ -36,7 +36,7 @@ test('initialize handshake and tools/list', async () => {
 
   const list = await client.request('tools/list');
   const names = list.result.tools.map((t) => t.name).sort();
-  assert.deepEqual(names, ['redaction_stats', 'run', 'secret_add', 'secret_list']);
+  assert.deepEqual(names, ['redact_mode', 'redaction_stats', 'run', 'secret_add', 'secret_list']);
   for (const tool of list.result.tools) {
     assert.ok(tool.description.length > 10);
     assert.ok(tool.inputSchema);
@@ -111,6 +111,34 @@ test('redaction_stats returns counters, never values', async () => {
   assert.ok(text.includes('totals'));
   assert.ok(!text.includes(CANARY));
   assert.ok(!text.includes(ADDED));
+});
+
+test('redact_mode tool reads and sets the mode, honoring the floor', async () => {
+  const get = await client.request('tools/call', { name: 'redact_mode', arguments: {} });
+  assert.match(get.result.content[0].text, /mode: strict/);
+
+  const set = await client.request('tools/call', {
+    name: 'redact_mode',
+    arguments: { mode: 'balanced' },
+  });
+  assert.ok(!set.result.isError);
+  assert.match(set.result.content[0].text, /balanced/);
+
+  // Floor defaults to named-only, so dropping there is allowed here.
+  const drop = await client.request('tools/call', {
+    name: 'redact_mode',
+    arguments: { mode: 'named-only' },
+  });
+  assert.ok(!drop.result.isError);
+
+  const bad = await client.request('tools/call', {
+    name: 'redact_mode',
+    arguments: { mode: 'off' },
+  });
+  assert.ok(bad.result.isError, 'invalid mode should error');
+
+  // restore strict for the transcript assertions below
+  await client.request('tools/call', { name: 'redact_mode', arguments: { mode: 'strict' } });
 });
 
 test('GLOBAL: the entire MCP stdout transcript never contains a secret value', () => {

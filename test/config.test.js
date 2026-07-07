@@ -55,6 +55,48 @@ test('FAIL_CLOSED=false is honored', () => {
   assert.equal(cfg.failClosed, false);
 });
 
+test('redaction mode defaults to strict (most secure)', () => {
+  const cfg = loadConfig({ env: { ...BASE_ENV }, cwd: emptyDir });
+  assert.equal(cfg.redactMode, 'strict');
+  assert.equal(cfg.redactModeFloor, 'named-only');
+  assert.deepEqual(cfg.redactDisable, []);
+  assert.deepEqual(cfg.redactIgnore, []);
+});
+
+test('redaction mode knobs are parsed', () => {
+  const cfg = loadConfig({
+    env: {
+      ...BASE_ENV,
+      REDACT_MODE: 'balanced',
+      REDACT_MODE_FLOOR: 'balanced',
+      REDACT_DISABLE: 'jwt, high-entropy-hex',
+      REDACT_IGNORE: 'safe-value-123, /^[0-9a-f]{64}$/',
+    },
+    cwd: emptyDir,
+  });
+  assert.equal(cfg.redactMode, 'balanced');
+  assert.equal(cfg.redactModeFloor, 'balanced');
+  assert.deepEqual(cfg.redactDisable, ['jwt', 'high-entropy-hex']);
+  assert.deepEqual(cfg.redactIgnore, ['safe-value-123', '/^[0-9a-f]{64}$/']);
+});
+
+test('invalid REDACT_MODE is rejected', () => {
+  assert.throws(
+    () => loadConfig({ env: { ...BASE_ENV, REDACT_MODE: 'off' }, cwd: emptyDir }),
+    /REDACT_MODE/,
+  );
+});
+
+test('a floor above the mode raises the effective mode to the floor', () => {
+  const cfg = loadConfig({
+    env: { ...BASE_ENV, REDACT_MODE: 'named-only', REDACT_MODE_FLOOR: 'balanced' },
+    cwd: emptyDir,
+  });
+  // The floor is a hard minimum; a mode below it is clamped up.
+  assert.equal(cfg.redactMode, 'balanced');
+  assert.equal(cfg.redactModeFloor, 'balanced');
+});
+
 test('parseDotEnv handles comments, blanks and quoted values', () => {
   const vars = parseDotEnv('# c\n\nA=1\nB="two words"\nC=\'single\'\nD=plain # not a comment\n');
   assert.deepEqual(vars, { A: '1', B: 'two words', C: 'single', D: 'plain # not a comment' });
