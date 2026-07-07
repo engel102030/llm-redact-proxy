@@ -85,11 +85,18 @@ export function buildNeedles({ name, value }) {
   candidates.add(percentEncodeAll(bytes));
 
   // Exact padded form first (clean replacement when the whole value was
-  // encoded standalone), then the offset-aligned cores.
-  candidates.add(bytes.toString('base64'));
-  for (const core of base64Cores(bytes, 'base64')) candidates.add(core);
-  candidates.add(bytes.toString('base64url'));
-  for (const core of base64Cores(bytes, 'base64url')) candidates.add(core);
+  // encoded standalone), then the offset-aligned cores. For every base64
+  // form also add its url-encoded shape ("+/=" become %2B %2F %3D), which
+  // is how encoded credentials travel in query strings and webhooks.
+  const addWithUrlForm = (enc) => {
+    candidates.add(enc);
+    const urlForm = encodeURIComponent(enc);
+    if (urlForm !== enc) candidates.add(urlForm);
+  };
+  addWithUrlForm(bytes.toString('base64'));
+  for (const core of base64Cores(bytes, 'base64')) addWithUrlForm(core);
+  addWithUrlForm(bytes.toString('base64url'));
+  for (const core of base64Cores(bytes, 'base64url')) addWithUrlForm(core);
 
   candidates.add(bytes.toString('hex'));
   candidates.add(bytes.toString('hex').toUpperCase());

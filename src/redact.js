@@ -108,7 +108,10 @@ function walkStrings(node, fn) {
   if (Array.isArray(node)) return node.map((n) => walkStrings(n, fn));
   if (node && typeof node === 'object') {
     const out = {};
-    for (const [key, value] of Object.entries(node)) out[key] = walkStrings(value, fn);
+    for (const [key, value] of Object.entries(node)) {
+      // Keys are strings too - a token used as a map key must not survive.
+      out[fn(key)] = walkStrings(value, fn);
+    }
     return out;
   }
   return node;
