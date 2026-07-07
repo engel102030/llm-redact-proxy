@@ -42,8 +42,35 @@ Tools exposed to the model:
 - **`secret_list`** - names only.
 - **`redaction_stats`** - counters, never values.
 
+- **`redact_mode`** - read or change how aggressively *unregistered* secrets
+  are redacted, at runtime (see below).
+
 There is intentionally no `secret_get`: returning a value into the context
 would defeat the whole system.
+
+## Redaction modes (tuning the false-positive / coverage tradeoff)
+
+Registered secrets (`secrets.local`) are **always** redacted. The mode only
+controls how the shape/entropy layer treats *unregistered* values, so you can
+stop it masking things you don't care about (an internal test cookie, a
+generated cert, a random high-entropy id):
+
+| Mode | Redacts | Use when |
+| --- | --- | --- |
+| `named-only` | only your registered secrets | internal/test work; leaking a random token is fine |
+| `balanced` | named + shapes (JWT, PEM, `Bearer`, API keys, cookies), **no** entropy | you want the obvious credentials caught without entropy false-positives |
+| `strict` (default) | everything, including entropy-gated blobs | maximum safety |
+
+Set the default with `REDACT_MODE`; change it live with the `redact_mode`
+tool (e.g. "this project is internal, use named-only"). `REDACT_MODE_FLOOR`
+is a hard minimum the tool cannot go below — set it to `balanced`/`strict` so
+a prompt-injected model can't loosen its own protection. `REDACT_DISABLE`
+turns off individual rules; `REDACT_IGNORE` marks specific values or `/regex/`
+patterns as known-safe.
+
+Note the proxy only touches the **request**, never the response — a freshly
+generated artifact is visible the turn it's created; redaction only affects it
+on later turns once it's part of the uploaded context.
 
 Without `UPSTREAM_URL` the MCP tools still work (proxy disabled) - useful
 while you are still on the official API and only want the runner + secret
