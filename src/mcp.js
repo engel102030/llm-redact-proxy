@@ -7,7 +7,7 @@
 import fs from 'node:fs';
 import { loadConfig } from './config.js';
 import { loadSecrets, MIN_SECRET_LENGTH } from './secrets.js';
-import { createRedactor } from './redact.js';
+import { createRedactor, MODES, MODE_RANK } from './redact.js';
 import { createStats } from './stats.js';
 import { createProxyServer } from './proxy.js';
 import { createRunner } from './runner.js';
@@ -18,11 +18,21 @@ const log = (line) => process.stderr.write(`${line}\n`);
 const config = loadConfig({ requireUpstream: false });
 
 let secrets = loadSecrets(config.secretsFile);
-const holder = { current: createRedactor({ secrets }) };
+let currentMode = config.redactMode;
+
+function build() {
+  return createRedactor({
+    secrets,
+    mode: currentMode,
+    disabledRules: config.redactDisable,
+    ignore: config.redactIgnore,
+  });
+}
+const holder = { current: build() };
 
 function reload() {
   secrets = loadSecrets(config.secretsFile);
-  holder.current = createRedactor({ secrets });
+  holder.current = build();
   log(`[redact] secrets reloaded: ${secrets.length} name(s)`);
 }
 // Pick up manual edits to the secrets file without a restart.
@@ -131,6 +141,22 @@ const TOOLS = [
       'requests. Rule names and counts only - never values.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'redact_mode',
+    description:
+      'Read or change how aggressively unregistered secrets are redacted. Call with no ' +
+      'arguments to read the current mode. Modes: "named-only" (only secrets in the list; ' +
+      'zero false positives, use for internal/test work where leaking a random token is ' +
+      'fine), "balanced" (named + recognizable secret shapes like JWT/PEM/API-keys, no ' +
+      'entropy guessing), "strict" (everything, most secure - default). Registered secrets ' +
+      'are ALWAYS redacted regardless of mode. A configured floor may prevent lowering it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: MODES, description: 'New mode; omit to just read the current one' },
+      },
+    },
+  },
 ];
 
 const text = (t) => ({ content: [{ type: 'text', text: t }] });
@@ -172,6 +198,26 @@ async function callTool(name, args) {
     }
     case 'redaction_stats':
       return text(JSON.stringify(stats.toJSON(), null, 2));
+    case 'redact_mode': {
+      if (args.mode === undefined) {
+        return text(`mode: ${currentMode} (floor: ${config.redactModeFloor})`);
+      }
+      if (!MODES.includes(args.mode)) {
+        return { content: [{ type: 'text', text: `error: invalid mode. Use one of ${MODES.join('|')}` }], isError: true };
+      }
+      // The floor is a hard minimum. This is the guard against a prompt-
+      // injected model loosening its own protection to exfiltrate.
+      if (MODE_RANK[args.mode] < MODE_RANK[config.redactModeFloor]) {
+        return {
+          content: [{ type: 'text', text: `error: mode "${args.mode}" is below the configured floor "${config.redactModeFloor}"; cannot lower further` }],
+          isError: true,
+        };
+      }
+      currentMode = args.mode;
+      holder.current = build();
+      log(`[redact] mode changed to ${currentMode}`);
+      return text(`mode set to ${currentMode}`);
+    }
     default:
       throw rpcError(-32602, `unknown tool: ${name}`);
   }

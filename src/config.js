@@ -2,6 +2,7 @@
 // which wins over defaults. Zero dependencies.
 import fs from 'node:fs';
 import path from 'node:path';
+import { MODES, MODE_RANK } from './redact.js';
 
 const DEFAULTS = {
   LISTEN_ADDR: '127.0.0.1:8788',
@@ -9,7 +10,15 @@ const DEFAULTS = {
   UPSTREAM_AUTH: 'passthrough',
   FAIL_CLOSED: 'true',
   INJECT_NOTICE: 'true',
+  REDACT_MODE: 'strict',
+  REDACT_MODE_FLOOR: 'named-only',
 };
+
+const splitList = (v) =>
+  (v ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
 
 export function parseDotEnv(text) {
   const vars = {};
@@ -80,6 +89,17 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
     throw new Error('UPSTREAM_AUTH=replace requires UPSTREAM_KEY');
   }
 
+  const requestedMode = get('REDACT_MODE');
+  if (!MODES.includes(requestedMode)) {
+    throw new Error(`REDACT_MODE must be one of ${MODES.join('|')}, got "${requestedMode}"`);
+  }
+  const floor = get('REDACT_MODE_FLOOR');
+  if (!MODES.includes(floor)) {
+    throw new Error(`REDACT_MODE_FLOOR must be one of ${MODES.join('|')}, got "${floor}"`);
+  }
+  // The floor is a hard minimum; a starting mode below it is clamped up.
+  const redactMode = MODE_RANK[requestedMode] < MODE_RANK[floor] ? floor : requestedMode;
+
   return {
     listenHost,
     listenPort,
@@ -89,5 +109,9 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
     secretsFile: path.resolve(cwd, get('SECRETS_FILE')),
     failClosed: get('FAIL_CLOSED') !== 'false',
     injectNotice: get('INJECT_NOTICE') !== 'false',
+    redactMode,
+    redactModeFloor: floor,
+    redactDisable: splitList(get('REDACT_DISABLE')),
+    redactIgnore: splitList(get('REDACT_IGNORE')),
   };
 }

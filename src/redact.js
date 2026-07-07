@@ -64,7 +64,39 @@ const ENTROPY_RULES = [
   { rule: 'high-entropy-base64', re: /[A-Za-z0-9_-]{40,}/g, threshold: 4.5 },
 ];
 
-function makeStringRedactor(needles, events) {
+export const MODES = ['named-only', 'balanced', 'strict'];
+export const MODE_RANK = { 'named-only': 0, balanced: 1, strict: 2 };
+
+// Which Layer B rule groups are active per mode. Layer A (named secrets) is
+// ALWAYS on - registering a secret is an explicit opt-in a mode never weakens.
+function activeLayerB(mode) {
+  if (mode === 'named-only') return { regex: [], entropy: [] };
+  if (mode === 'balanced') return { regex: REGEX_RULES, entropy: [] };
+  return { regex: REGEX_RULES, entropy: ENTROPY_RULES }; // strict (default)
+}
+
+// An ignore entry is either a literal string or a /regex/ (optionally with
+// flags). Returns a predicate that says whether a matched span is marked safe.
+function buildIgnoreMatcher(ignore = []) {
+  const literals = new Set();
+  const regexes = [];
+  for (const entry of ignore) {
+    const m = /^\/(.*)\/([a-z]*)$/is.exec(entry);
+    if (m) {
+      try {
+        regexes.push(new RegExp(m[1], m[2]));
+      } catch {
+        literals.add(entry); // malformed regex: treat as a literal
+      }
+    } else {
+      literals.add(entry);
+    }
+  }
+  if (literals.size === 0 && regexes.length === 0) return () => false;
+  return (span) => literals.has(span) || regexes.some((re) => re.test(span));
+}
+
+function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, events) {
   const bump = (rule, n = 1) => events.set(rule, (events.get(rule) ?? 0) + n);
 
   return function redactString(input) {
@@ -80,20 +112,23 @@ function makeStringRedactor(needles, events) {
     }
 
     // Layer B: shape rules.
-    for (const { rule, re, keep } of REGEX_RULES) {
+    for (const { rule, re, keep } of regexRules) {
       text = text.replace(re, (...args) => {
-        bump(rule);
+        const match = args[0];
         let prefix = '';
         for (let g = 1; g <= (keep ?? 0); g += 1) prefix += args[g];
+        if (isIgnored(match) || isIgnored(match.slice(prefix.length))) return match;
+        bump(rule);
         return prefix + marker(rule);
       });
     }
 
     // Layer B: entropy-gated blobs.
-    for (const { rule, re, threshold } of ENTROPY_RULES) {
+    for (const { rule, re, threshold } of entropyRules) {
       text = text.replace(re, (match) => {
         if (match.length > MAX_ENTROPY_RUN) return match;
         if (shannonEntropy(match) < threshold) return match;
+        if (isIgnored(match)) return match;
         bump(rule);
         return marker(rule);
       });
@@ -129,17 +164,32 @@ function isSerializationSafe(needle) {
   return true;
 }
 
-export function createRedactor({ secrets = [] } = {}) {
+export function createRedactor({
+  secrets = [],
+  mode = 'strict',
+  disabledRules = [],
+  ignore = [],
+} = {}) {
+  if (!MODES.includes(mode)) throw new Error(`invalid redaction mode: ${mode}`);
+  const disabled = new Set(disabledRules);
+
   const needles = secrets
     .flatMap((s) => buildNeedles(s))
+    .filter(({ name }) => !disabled.has(name))
     .sort((a, b) => b.needle.length - a.needle.length);
 
   const serializedSafe = needles.filter(({ needle }) => isSerializationSafe(needle));
 
+  const groups = activeLayerB(mode);
+  const regexRules = groups.regex.filter((r) => !disabled.has(r.rule));
+  const entropyRules = groups.entropy.filter((r) => !disabled.has(r.rule));
+  const isIgnored = buildIgnoreMatcher(ignore);
+  const engine = { needles, regexRules, entropyRules, isIgnored };
+
   function redactBody(raw, contentType = '') {
     if (typeof raw !== 'string') throw new TypeError('redactBody expects a string body');
     const events = new Map();
-    const redactString = makeStringRedactor(needles, events);
+    const redactString = makeStringRedactor(engine, events);
 
     let out = null;
     const looksJson = /json/i.test(contentType) || /^\s*[{[]/.test(raw);
@@ -175,5 +225,5 @@ export function createRedactor({ secrets = [] } = {}) {
     return { body: out, events: eventList };
   }
 
-  return { redactBody };
+  return { redactBody, mode };
 }

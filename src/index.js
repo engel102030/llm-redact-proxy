@@ -7,7 +7,12 @@ import { createProxyServer } from './proxy.js';
 
 const config = loadConfig();
 const secrets = loadSecrets(config.secretsFile);
-const redactor = createRedactor({ secrets });
+const redactor = createRedactor({
+  secrets,
+  mode: config.redactMode,
+  disabledRules: config.redactDisable,
+  ignore: config.redactIgnore,
+});
 const stats = createStats();
 const server = createProxyServer({ config, redactor, stats });
 
@@ -17,7 +22,7 @@ server.listen(config.listenPort, config.listenHost, () => {
   console.log(`[redact] upstream: ${config.upstreamUrl.href} (auth: ${config.upstreamAuth})`);
   console.log(`[redact] known secrets loaded: ${secrets.length} (values never logged)`);
   console.log(
-    `[redact] fail-closed: ${config.failClosed} | notice injection: ${config.injectNotice}`,
+    `[redact] fail-closed: ${config.failClosed} | notice injection: ${config.injectNotice} | mode: ${config.redactMode}`,
   );
   console.log(`[redact] dashboard: ${base}/__redact/`);
   console.log(`[redact] point your CLI at it, e.g. export ANTHROPIC_BASE_URL=${base}`);
