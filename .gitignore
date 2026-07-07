@@ -1,0 +1,11 @@
+node_modules/
+dist/
+*.log
+# the actual secret VALUES live here — NEVER committed
+secrets.local
+secrets.local.*
+!secrets.local.example
+.env
+.env.local
+.DS_Store
+.overclock-app/
