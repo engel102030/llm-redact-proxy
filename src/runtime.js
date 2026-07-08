@@ -3,6 +3,7 @@
 // restart. Persisted settings (config.json) override env defaults on boot.
 import { createRedactor, MODES, MODE_RANK } from './redact.js';
 import { loadSettings, saveSettings } from './settings.js';
+import { isAnthropicHost } from './claude-auth.js';
 
 export function createRuntime({ config, secrets = [] }) {
   let mode = config.redactMode;
@@ -39,8 +40,8 @@ export function createRuntime({ config, secrets = [] }) {
       }
     }
     if (patch.upstreamAuth !== undefined) {
-      if (!['passthrough', 'replace'].includes(patch.upstreamAuth)) {
-        throw new Error('upstreamAuth must be passthrough or replace');
+      if (!['passthrough', 'replace', 'oauth'].includes(patch.upstreamAuth)) {
+        throw new Error('upstreamAuth must be passthrough, replace or oauth');
       }
       upstream.auth = patch.upstreamAuth;
     }
@@ -55,6 +56,12 @@ export function createRuntime({ config, secrets = [] }) {
     }
     if (upstream.auth === 'replace' && !upstream.key) {
       throw new Error('upstreamAuth=replace requires a key');
+    }
+    // CRITICAL: the oauth mode injects the user's real Claude subscription
+    // token. It must NEVER go to a third party - only the official Anthropic
+    // API. Refuse to configure it against any other host.
+    if (upstream.auth === 'oauth' && upstream.url && !isAnthropicHost(upstream.url)) {
+      throw new Error('upstreamAuth=oauth is only allowed with an *.anthropic.com provider');
     }
     if (persist) saveSettings(config.configFile, snapshot());
   }

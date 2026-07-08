@@ -116,7 +116,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <div style="margin-top:.4rem"><button class="ghost" id="c_official" type="button">use Official Anthropic</button></div></div>
     <div class="f"><label>auth to provider</label>
       <select id="c_auth"><option value="passthrough">passthrough (forward the caller's token)</option>
-      <option value="replace">replace (inject the key below)</option></select></div>
+      <option value="replace">replace (inject the key below)</option>
+      <option value="oauth">oauth (use my Claude subscription - official only)</option></select></div>
     <div class="f"><label>provider key (only for replace)</label>
       <input id="c_key" type="password" placeholder="leave blank to keep current"></div>
     <div class="f"><label>redaction mode</label>

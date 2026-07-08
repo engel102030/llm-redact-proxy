@@ -9,6 +9,7 @@ import https from 'node:https';
 import zlib from 'node:zlib';
 import { injectNotice } from './inject.js';
 import { handleDashboard } from './dashboard.js';
+import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-auth.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // generous: SSE streams run long
@@ -75,7 +76,8 @@ function blockRequest(res, reason) {
   );
 }
 
-export function createProxyServer({ config, redactor, stats, getUpstream, controller }) {
+export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth }) {
+  const oauthOf = getOAuth ?? (() => readClaudeOAuth());
   // Upstream is resolved per request so the dashboard can switch providers
   // live. Falls back to the frozen config when no getter is supplied (the
   // standalone/back-compat path used by tests).
@@ -185,6 +187,25 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
       delete headers['x-api-key'];
       if (hadAuthorization) headers.authorization = `Bearer ${up.key}`;
       if (hadApiKey || !hadAuthorization) headers['x-api-key'] = up.key;
+    } else if (up.auth === 'oauth') {
+      // Use the user's Claude subscription. Defence in depth: never send the
+      // token anywhere but the official Anthropic API.
+      if (!isAnthropicHost(up.url)) {
+        req.resume();
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'oauth_misconfig', message: 'oauth auth is only allowed with an *.anthropic.com provider' } }));
+        stats.finish(entry, { status: 400, durationMs: Date.now() - t0 });
+        return;
+      }
+      const cred = oauthOf();
+      if (!cred || !cred.accessToken) {
+        req.resume();
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'no_oauth', message: 'no Claude subscription credential found - log in with the Claude CLI first' } }));
+        stats.finish(entry, { status: 502, durationMs: Date.now() - t0 });
+        return;
+      }
+      applyOAuthHeaders(headers, cred.accessToken);
     }
     headers.host = up.url.host;
     if (outBody) headers['content-length'] = String(outBody.length);
