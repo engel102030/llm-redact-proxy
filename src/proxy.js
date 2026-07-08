@@ -76,6 +76,30 @@ function blockRequest(res, reason) {
   );
 }
 
+// Models that support the 1M-context window. A proxied client cannot learn the
+// upstream context window from /v1/models (Anthropic does not advertise it), so
+// we surface a "[1m]" variant of each: Claude Code understands the suffix and
+// uses a 1M local compaction window when the variant is selected. Without this,
+// a host like Overclock only sees the base ids and defaults new sessions to 200k.
+const ONE_M_MODELS = new Set(['claude-opus-4-8', 'claude-sonnet-5']);
+
+function injectOneMVariants(list) {
+  if (!list || !Array.isArray(list.data)) return list;
+  const out = [];
+  for (const m of list.data) {
+    out.push(m);
+    if (m && typeof m.id === 'string' && ONE_M_MODELS.has(m.id)) {
+      out.push({
+        ...m,
+        id: `${m.id}[1m]`,
+        display_name: `${m.display_name ?? m.id} (1M context)`,
+      });
+    }
+  }
+  list.data = out;
+  return list;
+}
+
 export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth }) {
   const oauthOf = getOAuth ?? (() => readClaudeOAuth());
   // Upstream is resolved per request so the dashboard can switch providers
@@ -99,6 +123,14 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
         },
         controller,
       );
+      return;
+    }
+
+    // Liveness probe: hosts check the base URL with HEAD/GET /. Answer locally
+    // instead of forwarding to a vendor root that 404s.
+    if ((req.method === 'GET' || req.method === 'HEAD') && (req.url === '/' || req.url === '')) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(req.method === 'HEAD' ? undefined : JSON.stringify({ status: 'ok', service: 'llm-redact-proxy' }));
       return;
     }
 
@@ -214,6 +246,10 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
     headers.host = up.url.host;
     if (outBody) headers['content-length'] = String(outBody.length);
 
+    // Models discovery is rewritten (buffered) to expose [1m] variants; every
+    // other path streams through untouched.
+    const isModelsList = req.method === 'GET' && /^\/v1\/models\b/.test((req.url ?? '').split('?')[0]);
+
     const upstreamReq = transport.request(
       {
         protocol: up.url.protocol,
@@ -230,6 +266,54 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
           if (HOP_BY_HOP.has(key.toLowerCase())) continue;
           responseHeaders[key] = value;
         }
+
+        if (isModelsList) {
+          // Buffer, decompress, add the [1m] variants, send uncompressed.
+          const respEnc = String(upstreamRes.headers['content-encoding'] ?? '').toLowerCase();
+          let src = upstreamRes;
+          try {
+            if (respEnc === 'gzip' || respEnc === 'x-gzip') src = upstreamRes.pipe(zlib.createGunzip());
+            else if (respEnc === 'br') src = upstreamRes.pipe(zlib.createBrotliDecompress());
+            else if (respEnc === 'deflate') src = upstreamRes.pipe(zlib.createInflate());
+            else if (respEnc === 'zstd' && typeof zlib.createZstdDecompress === 'function') {
+              src = upstreamRes.pipe(zlib.createZstdDecompress());
+            }
+          } catch {
+            src = upstreamRes;
+          }
+          const chunks = [];
+          let rawBytes = 0;
+          upstreamRes.on('data', (c) => {
+            rawBytes += c.length;
+          });
+          src.on('data', (c) => chunks.push(c));
+          const sendModels = (status) => {
+            let outBuf;
+            try {
+              const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+              outBuf = Buffer.from(JSON.stringify(injectOneMVariants(parsed)), 'utf8');
+            } catch {
+              outBuf = Buffer.concat(chunks);
+            }
+            const h = { ...responseHeaders };
+            delete h['content-encoding'];
+            delete h['content-length'];
+            h['content-length'] = String(outBuf.length);
+            res.writeHead(status, h);
+            res.end(outBuf);
+            stats.finish(entry, { status, durationMs: Date.now() - t0, respBytes: rawBytes });
+          };
+          src.on('end', () => sendModels(upstreamRes.statusCode ?? 200));
+          src.on('error', () => {
+            if (!res.headersSent) {
+              res.writeHead(502, { 'content-type': 'application/json' });
+              res.end(JSON.stringify({ error: { type: 'models_rewrite_failed' } }));
+            }
+            stats.finish(entry, { status: 502, durationMs: Date.now() - t0, respBytes: rawBytes });
+          });
+          return;
+        }
+
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
 
         // Tap the response ONLY to read token-usage numbers and byte count for
