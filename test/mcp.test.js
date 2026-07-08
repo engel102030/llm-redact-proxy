@@ -160,7 +160,7 @@ test('embedded proxy starts with the MCP process and redacts traffic', async () 
     },
   });
   try {
-    const m = await proxyClient.waitForStderr(/proxy listening on http:\/\/127\.0\.0\.1:(\d+)/);
+    const m = await proxyClient.waitForStderr(/proxy on http:\/\/127\.0\.0\.1:(\d+)/);
     const port = Number(m[1]);
     const res = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
       method: 'POST',

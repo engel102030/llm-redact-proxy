@@ -75,19 +75,48 @@ function blockRequest(res, reason) {
   );
 }
 
-export function createProxyServer({ config, redactor, stats }) {
-  const transport = config.upstreamUrl.protocol === 'https:' ? https : http;
-  const upstreamBasePath = config.upstreamUrl.pathname.replace(/\/$/, '');
+export function createProxyServer({ config, redactor, stats, getUpstream, controller }) {
+  // Upstream is resolved per request so the dashboard can switch providers
+  // live. Falls back to the frozen config when no getter is supplied (the
+  // standalone/back-compat path used by tests).
+  const upstreamOf =
+    getUpstream ??
+    (() => ({ url: config.upstreamUrl, auth: config.upstreamAuth, key: config.upstreamKey }));
 
   return http.createServer(async (req, res) => {
     if ((req.url ?? '').startsWith('/__redact')) {
-      handleDashboard(req, res, stats, {
-        upstream: config.upstreamUrl?.href ?? null,
-        mode: config.redactMode ?? null,
-        failClosed: config.failClosed,
-      });
+      const up = upstreamOf();
+      handleDashboard(
+        req,
+        res,
+        stats,
+        {
+          upstream: up.url?.href ?? null,
+          mode: controller?.mode ?? config.redactMode ?? null,
+          failClosed: config.failClosed,
+        },
+        controller,
+      );
       return;
     }
+
+    const up = upstreamOf();
+    if (!up.url) {
+      req.resume(); // drain the body
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          error: {
+            type: 'no_upstream',
+            message:
+              'No provider configured. Open the dashboard at /__redact/ and set a provider URL.',
+          },
+        }),
+      );
+      return;
+    }
+    const transport = up.url.protocol === 'https:' ? https : http;
+    const upstreamBasePath = up.url.pathname.replace(/\/$/, '');
 
     let rawBuffer;
     try {
@@ -149,22 +178,22 @@ export function createProxyServer({ config, redactor, stats }) {
       if (k === 'content-encoding' && !keepContentEncoding) continue;
       headers[k] = value;
     }
-    if (config.upstreamAuth === 'replace') {
+    if (up.auth === 'replace') {
       const hadAuthorization = 'authorization' in headers;
       const hadApiKey = 'x-api-key' in headers;
       delete headers.authorization;
       delete headers['x-api-key'];
-      if (hadAuthorization) headers.authorization = `Bearer ${config.upstreamKey}`;
-      if (hadApiKey || !hadAuthorization) headers['x-api-key'] = config.upstreamKey;
+      if (hadAuthorization) headers.authorization = `Bearer ${up.key}`;
+      if (hadApiKey || !hadAuthorization) headers['x-api-key'] = up.key;
     }
-    headers.host = config.upstreamUrl.host;
+    headers.host = up.url.host;
     if (outBody) headers['content-length'] = String(outBody.length);
 
     const upstreamReq = transport.request(
       {
-        protocol: config.upstreamUrl.protocol,
-        hostname: config.upstreamUrl.hostname,
-        port: config.upstreamUrl.port || (config.upstreamUrl.protocol === 'https:' ? 443 : 80),
+        protocol: up.url.protocol,
+        hostname: up.url.hostname,
+        port: up.url.port || (up.url.protocol === 'https:' ? 443 : 80),
         method: req.method,
         path: `${upstreamBasePath}${req.url ?? '/'}`,
         headers,

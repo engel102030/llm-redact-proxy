@@ -100,13 +100,22 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
   // The floor is a hard minimum; a starting mode below it is clamped up.
   const redactMode = MODE_RANK[requestedMode] < MODE_RANK[floor] ? floor : requestedMode;
 
+  const secretsFile = path.resolve(cwd, get('SECRETS_FILE'));
+  // Dashboard-saved settings live next to the secrets file by default, so the
+  // global install (SECRETS_FILE in ~/.config/...) also gets its config.json
+  // there with no extra env var.
+  const configFile = env.CONFIG_FILE
+    ? path.resolve(cwd, env.CONFIG_FILE)
+    : path.join(path.dirname(secretsFile), 'config.json');
+
   return {
     listenHost,
     listenPort,
     upstreamUrl,
     upstreamAuth,
     upstreamKey,
-    secretsFile: path.resolve(cwd, get('SECRETS_FILE')),
+    secretsFile,
+    configFile,
     failClosed: get('FAIL_CLOSED') !== 'false',
     injectNotice: get('INJECT_NOTICE') !== 'false',
     redactMode,

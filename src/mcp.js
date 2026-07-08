@@ -7,10 +7,11 @@
 import fs from 'node:fs';
 import { loadConfig } from './config.js';
 import { loadSecrets, MIN_SECRET_LENGTH } from './secrets.js';
-import { createRedactor, MODES, MODE_RANK } from './redact.js';
+import { MODES } from './redact.js';
 import { createStats } from './stats.js';
 import { createProxyServer } from './proxy.js';
 import { createRunner } from './runner.js';
+import { createRuntime } from './runtime.js';
 import { createRpcServer, rpcError } from './mcp-protocol.js';
 
 const log = (line) => process.stderr.write(`${line}\n`);
@@ -18,21 +19,13 @@ const log = (line) => process.stderr.write(`${line}\n`);
 const config = loadConfig({ requireUpstream: false });
 
 let secrets = loadSecrets(config.secretsFile);
-let currentMode = config.redactMode;
-
-function build() {
-  return createRedactor({
-    secrets,
-    mode: currentMode,
-    disabledRules: config.redactDisable,
-    ignore: config.redactIgnore,
-  });
-}
-const holder = { current: build() };
+// The runtime holds the live redactor + upstream provider and applies
+// dashboard-driven settings changes in place.
+const runtime = createRuntime({ config, secrets });
 
 function reload() {
   secrets = loadSecrets(config.secretsFile);
-  holder.current = build();
+  runtime.setSecrets(secrets);
   log(`[redact] secrets reloaded: ${secrets.length} name(s)`);
 }
 // Pick up manual edits to the secrets file without a restart.
@@ -41,28 +34,34 @@ fs.watchFile(config.secretsFile, { interval: 2000 }, reload);
 const stats = createStats({ log });
 const runner = createRunner({
   getSecrets: () => secrets,
-  getRedactor: () => holder.current,
+  getRedactor: () => runtime.holder.current,
 });
 
-// ---- embedded proxy -------------------------------------------------------
-if (config.upstreamUrl) {
-  const liveRedactor = { redactBody: (raw, ct) => holder.current.redactBody(raw, ct) };
-  const server = createProxyServer({ config, redactor: liveRedactor, stats });
-  server.on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-      log('[redact] proxy port busy (another instance running?) - continuing with MCP tools only');
-    } else {
-      log(`[redact] proxy failed to start: ${err.message}`);
-    }
-  });
-  server.listen(config.listenPort, config.listenHost, () => {
-    const { port } = server.address();
-    log(`[redact] proxy listening on http://${config.listenHost}:${port}`);
-    log(`[redact] point your CLI at it: export ANTHROPIC_BASE_URL=http://${config.listenHost}:${port}`);
-  });
-} else {
-  log('[redact] UPSTREAM_URL not set - embedded proxy disabled, MCP tools only');
-}
+// ---- embedded proxy (always on: serves the dashboard even before a provider
+// is configured, so the whole thing is set up from the panel).
+const liveRedactor = { redactBody: (raw, ct) => runtime.holder.current.redactBody(raw, ct) };
+const server = createProxyServer({
+  config,
+  redactor: liveRedactor,
+  stats,
+  getUpstream: () => runtime.upstream,
+  controller: runtime,
+});
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    log('[redact] proxy port busy (another instance running?) - MCP tools still active');
+  } else {
+    log(`[redact] proxy failed to start: ${err.message}`);
+  }
+});
+server.listen(config.listenPort, config.listenHost, () => {
+  const { port } = server.address();
+  log(`[redact] dashboard + proxy on http://${config.listenHost}:${port}/__redact/`);
+  log(`[redact] point your CLI at it: export ANTHROPIC_BASE_URL=http://${config.listenHost}:${port}`);
+  if (!runtime.upstream.url) {
+    log('[redact] no provider configured yet - open the dashboard to set one');
+  }
+});
 
 // ---- secrets file upsert --------------------------------------------------
 function upsertSecret(name, value) {
@@ -200,23 +199,18 @@ async function callTool(name, args) {
       return text(JSON.stringify(stats.toJSON(), null, 2));
     case 'redact_mode': {
       if (args.mode === undefined) {
-        return text(`mode: ${currentMode} (floor: ${config.redactModeFloor})`);
+        return text(`mode: ${runtime.mode} (floor: ${config.redactModeFloor})`);
       }
-      if (!MODES.includes(args.mode)) {
-        return { content: [{ type: 'text', text: `error: invalid mode. Use one of ${MODES.join('|')}` }], isError: true };
+      try {
+        // runtime.apply validates the mode, enforces the floor (the guard
+        // against a prompt-injected model loosening its own protection) and
+        // persists the change.
+        runtime.apply({ redactMode: args.mode });
+        log(`[redact] mode changed to ${runtime.mode}`);
+        return text(`mode set to ${runtime.mode}`);
+      } catch (err) {
+        return { content: [{ type: 'text', text: `error: ${err.message}` }], isError: true };
       }
-      // The floor is a hard minimum. This is the guard against a prompt-
-      // injected model loosening its own protection to exfiltrate.
-      if (MODE_RANK[args.mode] < MODE_RANK[config.redactModeFloor]) {
-        return {
-          content: [{ type: 'text', text: `error: mode "${args.mode}" is below the configured floor "${config.redactModeFloor}"; cannot lower further` }],
-          isError: true,
-        };
-      }
-      currentMode = args.mode;
-      holder.current = build();
-      log(`[redact] mode changed to ${currentMode}`);
-      return text(`mode set to ${currentMode}`);
     }
     default:
       throw rpcError(-32602, `unknown tool: ${name}`);
@@ -238,4 +232,4 @@ createRpcServer({
   },
 });
 
-log(`[redact] MCP server ready (secrets: ${secrets.length}, proxy: ${config.upstreamUrl ? 'enabled' : 'off'})`);
+log(`[redact] MCP server ready (secrets: ${secrets.length}, provider: ${runtime.upstream.url?.href ?? 'not set'})`);
