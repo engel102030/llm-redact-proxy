@@ -12,6 +12,8 @@ import {
   clearClaudeOAuthCache,
   isAnthropicHost,
   applyOAuthHeaders,
+  ensureClaudeCodeSystem,
+  CLAUDE_CODE_SYSTEM,
 } from '../src/claude-auth.js';
 import { createRuntime } from '../src/runtime.js';
 import { createProxyServer } from '../src/proxy.js';
@@ -103,6 +105,27 @@ test('applyOAuthHeaders drops x-api-key, sets Bearer, ensures the beta flag', ()
   assert.equal(h2['anthropic-beta'], 'other-flag-1,oauth-2025-04-20');
   const h3 = applyOAuthHeaders({ 'anthropic-beta': 'oauth-2025-04-20' }, 'tok');
   assert.equal(h3['anthropic-beta'], 'oauth-2025-04-20');
+});
+
+test('ensureClaudeCodeSystem injects the CC prompt only when missing', () => {
+  const noSystem = { messages: [] };
+  assert.equal(ensureClaudeCodeSystem(noSystem), true);
+  assert.equal(noSystem.system, CLAUDE_CODE_SYSTEM);
+
+  const strSystem = { system: 'You are a helpful bot.', messages: [] };
+  assert.equal(ensureClaudeCodeSystem(strSystem), true);
+  assert.ok(Array.isArray(strSystem.system));
+  assert.equal(strSystem.system[0].text, CLAUDE_CODE_SYSTEM);
+  assert.equal(strSystem.system[1].text, 'You are a helpful bot.');
+
+  const arrSystem = { system: [{ type: 'text', text: 'custom' }], messages: [] };
+  assert.equal(ensureClaudeCodeSystem(arrSystem), true);
+  assert.equal(arrSystem.system[0].text, CLAUDE_CODE_SYSTEM);
+
+  // already present as first block -> untouched
+  const already = { system: [{ type: 'text', text: CLAUDE_CODE_SYSTEM }, { type: 'text', text: 'x' }], messages: [] };
+  assert.equal(ensureClaudeCodeSystem(already), false);
+  assert.equal(already.system.length, 2);
 });
 
 test('proxy oauth guard blocks a non-anthropic host even if forced at runtime', async () => {

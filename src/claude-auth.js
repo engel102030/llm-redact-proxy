@@ -60,6 +60,36 @@ export function isAnthropicHost(url) {
   return host === 'anthropic.com' || host.endsWith('.anthropic.com');
 }
 
+// Anthropic only unlocks premium models (Sonnet/Opus) for a subscription OAuth
+// token when the request carries the Claude Code system prompt as its first
+// system block - the anti-abuse gate. Ensure it is present (only injected when
+// missing, so real Claude Code traffic is untouched). Mutates body; returns
+// true if it changed anything.
+export const CLAUDE_CODE_SYSTEM = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+export function ensureClaudeCodeSystem(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
+  const isCC = (s) => typeof s === 'string' && s.startsWith(CLAUDE_CODE_SYSTEM);
+  const block = { type: 'text', text: CLAUDE_CODE_SYSTEM };
+
+  if (body.system === undefined || body.system === null) {
+    body.system = CLAUDE_CODE_SYSTEM;
+    return true;
+  }
+  if (typeof body.system === 'string') {
+    if (isCC(body.system)) return false;
+    body.system = [block, { type: 'text', text: body.system }];
+    return true;
+  }
+  if (Array.isArray(body.system)) {
+    const first = body.system[0];
+    if (first && first.type === 'text' && isCC(first.text)) return false;
+    body.system.unshift(block);
+    return true;
+  }
+  return false;
+}
+
 // Rewrites request headers to authenticate with the subscription OAuth token:
 // drop x-api-key, set the Bearer, and ensure the required oauth beta flag is
 // present (merged with any existing anthropic-beta list). Mutates and returns
