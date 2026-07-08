@@ -3,6 +3,11 @@
 // as environment variables), execute LOCALLY, and return output that has
 // been redacted by the same engine the proxy uses. The literal value never
 // travels back into the model context.
+//
+// Cross-platform: spawn with { shell: true } uses the platform default shell
+// (/bin/sh on POSIX, cmd.exe on Windows). The {{NAME}} substitution happens
+// before spawn so it works in any shell; the $NAME env-var form is POSIX-shell
+// syntax (on Windows the same value is available as %NAME% / $env:NAME).
 import { spawn } from 'node:child_process';
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -42,7 +47,7 @@ export function createRunner({ getSecrets, getRedactor }) {
     for (const { name, value } of secrets) env[name] = value;
 
     const result = await new Promise((resolve, reject) => {
-      const child = spawn('/bin/sh', ['-c', resolved], { env });
+      const child = spawn(resolved, { shell: true, env });
       let stdout = '';
       let stderr = '';
       let timedOut = false;

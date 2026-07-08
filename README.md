@@ -132,6 +132,20 @@ npm start           # node src/index.js
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 ```
 
+### Platform support
+
+macOS, Linux and Windows. The `run` tool uses the platform's default shell
+(`/bin/sh` on POSIX, `cmd.exe` on Windows). Notes for Windows:
+
+- `{{NAME}}` placeholders work in any shell (substituted before the command
+  runs) — prefer them.
+- The `$NAME` env-var form is POSIX syntax; in `cmd.exe` use `%NAME%`, in
+  PowerShell `$env:NAME`. Secrets are injected as env vars either way.
+- Secret files are written `chmod 600`; NTFS ignores POSIX bits, so protect the
+  file via its ACLs / location instead.
+- For a global secrets store use an absolute path such as
+  `%APPDATA%\llm-redact-proxy\secrets.local` (POSIX uses `~/.config/...`).
+
 ## Configuration (`.env` or environment)
 
 | Var | Default | Meaning |
