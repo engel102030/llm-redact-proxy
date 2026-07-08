@@ -40,11 +40,13 @@ async function startProxyWith(upstreamUrl) {
   return { url: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
 }
 
-test('GET /v1/models gains [1m] variants for 1M-capable models', async () => {
+test('GET /v1/models tags every id with [1m] except Haiku; names stay clean; no drops/dupes', async () => {
   const upstream = await upstreamServing({
     data: [
       { id: 'claude-opus-4-8', display_name: 'Claude Opus 4.8', type: 'model' },
+      { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7', type: 'model' },
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5', type: 'model' },
+      { id: 'claude-fable-5', display_name: 'Claude Fable 5', type: 'model' },
       { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5', type: 'model' },
     ],
   });
@@ -54,13 +56,18 @@ test('GET /v1/models gains [1m] variants for 1M-capable models', async () => {
     assert.equal(res.status, 200);
     const body = await res.json();
     const ids = body.data.map((m) => m.id);
-    assert.ok(ids.includes('claude-opus-4-8[1m]'), 'opus 1M variant added');
-    assert.ok(ids.includes('claude-sonnet-5[1m]'), 'sonnet 1M variant added');
-    assert.ok(ids.includes('claude-opus-4-8'), 'base opus still present');
-    // haiku does not get a 1M variant
-    assert.ok(!ids.includes('claude-haiku-4-5-20251001[1m]'), 'haiku must not get a 1M variant');
-    const variant = body.data.find((m) => m.id === 'claude-opus-4-8[1m]');
-    assert.match(variant.display_name, /1M context/);
+    // same count as upstream (nothing dropped, nothing duplicated)
+    assert.equal(ids.length, 5);
+    // 1M families get the [1m] suffix
+    assert.ok(ids.includes('claude-opus-4-8[1m]'));
+    assert.ok(ids.includes('claude-opus-4-7[1m]'));
+    assert.ok(ids.includes('claude-sonnet-5[1m]'));
+    assert.ok(ids.includes('claude-fable-5[1m]'));
+    // Haiku stays base (no 1M)
+    assert.ok(ids.includes('claude-haiku-4-5-20251001'));
+    assert.ok(!ids.includes('claude-haiku-4-5-20251001[1m]'));
+    // display names untouched (clean)
+    assert.equal(body.data.find((m) => m.id === 'claude-opus-4-8[1m]').display_name, 'Claude Opus 4.8');
   } finally {
     await proxy.close();
     await upstream.close();

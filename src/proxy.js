@@ -76,27 +76,21 @@ function blockRequest(res, reason) {
   );
 }
 
-// Models that support the 1M-context window. A proxied client cannot learn the
-// upstream context window from /v1/models (Anthropic does not advertise it), so
-// we surface a "[1m]" variant of each: Claude Code understands the suffix and
-// uses a 1M local compaction window when the variant is selected. Without this,
-// a host like Overclock only sees the base ids and defaults new sessions to 200k.
-const ONE_M_MODELS = new Set(['claude-opus-4-8', 'claude-sonnet-5']);
+// A proxied host can't learn the upstream context window from /v1/models, so
+// the proxy tags every model id with the "[1m]" suffix (which Claude Code reads
+// to use a 1M local window) EXCEPT models that don't support 1M (Haiku). The
+// display name is left clean ("Claude Opus 4.8", not "... [1m]") and no models
+// are dropped or duplicated - each appears once with the right id.
+const NO_ONE_M = /haiku/i;
 
-function injectOneMVariants(list) {
+function tagOneMIds(list) {
   if (!list || !Array.isArray(list.data)) return list;
-  const out = [];
-  for (const m of list.data) {
-    out.push(m);
-    if (m && typeof m.id === 'string' && ONE_M_MODELS.has(m.id)) {
-      out.push({
-        ...m,
-        id: `${m.id}[1m]`,
-        display_name: `${m.display_name ?? m.id} (1M context)`,
-      });
+  list.data = list.data.map((m) => {
+    if (m && typeof m.id === 'string' && !NO_ONE_M.test(m.id) && !m.id.endsWith('[1m]')) {
+      return { ...m, id: `${m.id}[1m]` }; // clean display_name kept as-is
     }
-  }
-  list.data = out;
+    return m;
+  });
   return list;
 }
 
@@ -291,7 +285,7 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             let outBuf;
             try {
               const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-              outBuf = Buffer.from(JSON.stringify(injectOneMVariants(parsed)), 'utf8');
+              outBuf = Buffer.from(JSON.stringify(tagOneMIds(parsed)), 'utf8');
             } catch {
               outBuf = Buffer.concat(chunks);
             }
