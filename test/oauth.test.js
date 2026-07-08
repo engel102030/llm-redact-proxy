@@ -92,15 +92,17 @@ async function boot(config, getOAuth) {
   return { runtime, url: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) };
 }
 
-test('applyOAuthHeaders drops x-api-key, sets Bearer, ensures the beta flag', () => {
+test('applyOAuthHeaders drops x-api-key, sets Bearer, ensures the oauth beta flag', () => {
   const h1 = applyOAuthHeaders({ 'x-api-key': 'caller-mimo-token' }, 'sub-token-xyz-987');
   assert.equal(h1['x-api-key'], undefined);
   assert.equal(h1.authorization, 'Bearer sub-token-xyz-987');
+  // only the oauth gate is forced; the model (e.g. a 1M-context variant) and
+  // any other betas come from the client untouched.
   assert.equal(h1['anthropic-beta'], 'oauth-2025-04-20');
 
   // merges with an existing beta list, no duplication
-  const h2 = applyOAuthHeaders({ 'anthropic-beta': 'other-flag-1' }, 'tok');
-  assert.equal(h2['anthropic-beta'], 'other-flag-1,oauth-2025-04-20');
+  const h2 = applyOAuthHeaders({ 'anthropic-beta': 'context-1m-2025-08-07' }, 'tok');
+  assert.equal(h2['anthropic-beta'], 'context-1m-2025-08-07,oauth-2025-04-20');
   const h3 = applyOAuthHeaders({ 'anthropic-beta': 'oauth-2025-04-20' }, 'tok');
   assert.equal(h3['anthropic-beta'], 'oauth-2025-04-20');
 });

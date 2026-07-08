@@ -252,19 +252,45 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
           }
           carry = textChunk.slice(-64);
         };
-        upstreamRes.on('data', (chunk) => {
-          respBytes += chunk.length;
-          scan(chunk.toString('utf8'));
-        });
-        upstreamRes.on('end', () =>
+        let finished = false;
+        const finishStats = () => {
+          if (finished) return;
+          finished = true;
           stats.finish(entry, {
             status: upstreamRes.statusCode ?? null,
             durationMs: Date.now() - t0,
             inputTokens: inTok,
             outputTokens: outTok,
             respBytes,
-          }),
-        );
+          });
+        };
+        // Token usage lives in the (often compressed) response body. Decompress
+        // a COPY of the stream only to read the numbers - the client still
+        // receives the original bytes untouched via pipe().
+        const respEnc = String(upstreamRes.headers['content-encoding'] ?? '').toLowerCase();
+        let sniff = null;
+        if (respEnc === 'gzip' || respEnc === 'x-gzip') sniff = zlib.createGunzip();
+        else if (respEnc === 'deflate') sniff = zlib.createInflate();
+        else if (respEnc === 'br') sniff = zlib.createBrotliDecompress();
+        else if (respEnc === 'zstd' && typeof zlib.createZstdDecompress === 'function') {
+          sniff = zlib.createZstdDecompress();
+        }
+        if (sniff) {
+          sniff.on('data', (d) => scan(d.toString('utf8')));
+          sniff.on('end', finishStats);
+          sniff.on('error', finishStats); // bad decode: finish with whatever we have
+          upstreamRes.on('data', (chunk) => {
+            respBytes += chunk.length;
+            sniff.write(chunk);
+          });
+          upstreamRes.on('end', () => sniff.end());
+        } else {
+          upstreamRes.on('data', (chunk) => {
+            respBytes += chunk.length;
+            scan(chunk.toString('utf8'));
+          });
+          upstreamRes.on('end', finishStats);
+        }
         // Unbuffered passthrough: SSE chunks stream straight back.
         upstreamRes.pipe(res);
       },

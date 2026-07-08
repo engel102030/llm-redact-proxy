@@ -60,19 +60,24 @@ export function isAnthropicHost(url) {
   return host === 'anthropic.com' || host.endsWith('.anthropic.com');
 }
 
+// Beta flag the official Anthropic API requires to accept a subscription OAuth
+// token. (The 1M-context beta is NOT added: this subscription is not eligible
+// for it - the API returns "long context beta is not yet available for this
+// subscription" - so forcing it would break every request.)
+export const OAUTH_BETA_FLAGS = ['oauth-2025-04-20'];
+
 // Rewrites request headers to authenticate with the subscription OAuth token:
-// drop x-api-key, set the Bearer, and ensure the required oauth beta flag is
+// drop x-api-key, set the Bearer, and ensure the required beta flags are
 // present (merged with any existing anthropic-beta list). Mutates and returns
 // the headers object.
 export function applyOAuthHeaders(headers, accessToken) {
   delete headers['x-api-key'];
   headers.authorization = `Bearer ${accessToken}`;
-  const need = 'oauth-2025-04-20';
-  const beta = headers['anthropic-beta'];
-  headers['anthropic-beta'] = beta
-    ? beta.split(',').map((s) => s.trim()).includes(need)
-      ? beta
-      : `${beta},${need}`
-    : need;
+  const present = String(headers['anthropic-beta'] ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const flag of OAUTH_BETA_FLAGS) if (!present.includes(flag)) present.push(flag);
+  headers['anthropic-beta'] = present.join(',');
   return headers;
 }
