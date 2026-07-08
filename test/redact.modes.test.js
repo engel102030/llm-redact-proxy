@@ -46,6 +46,21 @@ test('balanced: shapes redacted, entropy passes', () => {
   assert.ok(!named.body.includes(NAMED.value), 'named secret always redacted');
 });
 
+test('disabled: nothing is redacted, not even a registered secret or a JWT', () => {
+  const jwtBody = redact(`v ${NAMED.value} and t ${JWT}`, { mode: 'disabled' });
+  assert.ok(jwtBody.body.includes(NAMED.value), 'registered secret must pass in disabled mode');
+  assert.ok(jwtBody.body.includes(JWT), 'JWT must pass in disabled mode');
+  assert.equal(jwtBody.events.length, 0);
+});
+
+test('disabled: body is returned untouched (byte-identical)', () => {
+  const r = createRedactor({ secrets: [NAMED], mode: 'disabled' });
+  const raw = JSON.stringify({ messages: [{ role: 'user', content: `key ${NAMED.value}` }] });
+  const { body, events } = r.redactBody(raw, 'application/json');
+  assert.equal(body, raw);
+  assert.equal(events.length, 0);
+});
+
 test('strict: shapes AND entropy redacted', () => {
   const jwt = redact(`t ${JWT}`, { mode: 'strict' });
   assert.ok(!jwt.body.includes(JWT));

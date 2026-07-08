@@ -112,7 +112,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
   <h2>provider configuration</h2>
   <div class="form">
     <div class="f" style="grid-column:1/-1"><label>provider URL (upstream the redacted request is forwarded to)</label>
-      <input id="c_url" placeholder="https://your-provider.example/anthropic"></div>
+      <input id="c_url" placeholder="https://your-provider.example/anthropic">
+      <div style="margin-top:.4rem"><button class="ghost" id="c_official" type="button">use Official Anthropic</button></div></div>
     <div class="f"><label>auth to provider</label>
       <select id="c_auth"><option value="passthrough">passthrough (forward the caller's token)</option>
       <option value="replace">replace (inject the key below)</option></select></div>
@@ -172,6 +173,7 @@ async function saveCfg(){
   }catch(e){$('cfgmsg').textContent='save failed: '+e;$('cfgmsg').className='err';}
 }
 $('c_save').onclick=saveCfg;$('c_reload').onclick=loadCfg;
+$('c_official').onclick=()=>{$('c_url').value='https://api.anthropic.com';$('cfgmsg').textContent='official Anthropic - remember to save';$('cfgmsg').className='mut';};
 
 function statusCell(e){
   if(e.blocked)return '<span class="pill warn">BLOCKED</span>';

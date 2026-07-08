@@ -81,6 +81,18 @@ test('a floor above the starting mode is clamped up on boot is a config concern,
   assert.equal(rt.mode, 'balanced');
 });
 
+test('disabled mode is blocked by the default floor, allowed when floor permits', () => {
+  const blocked = createRuntime({ config: baseConfig({ redactModeFloor: 'named-only' }), secrets: [] });
+  assert.throws(() => blocked.apply({ redactMode: 'disabled' }), /floor/);
+
+  const allowed = createRuntime({ config: baseConfig({ redactModeFloor: 'disabled' }), secrets: [] });
+  allowed.apply({ redactMode: 'disabled' });
+  assert.equal(allowed.mode, 'disabled');
+  // In disabled mode the redactor is a passthrough.
+  const out = allowed.holder.current.redactBody(JSON.stringify({ c: 'leak-me-value-123' }), 'application/json');
+  assert.ok(out.body.includes('leak-me-value-123'));
+});
+
 test('invalid upstream url is rejected', () => {
   const rt = createRuntime({ config: baseConfig(), secrets: [] });
   assert.throws(() => rt.apply({ upstreamUrl: 'ftp://nope.example' }), /http/);

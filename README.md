@@ -89,12 +89,16 @@ shape/entropy layer treats *unregistered* values:
 
 | Mode | Redacts | Use when |
 | --- | --- | --- |
+| `disabled` | nothing (full bypass) | a trusted destination like the official Anthropic API — requires the floor to allow it |
 | `named-only` | only registered secrets | internal/test work; a random token leaking is fine |
 | `balanced` | named + shapes (JWT/PEM/keys/cookies), no entropy | catch the obvious without entropy false-positives |
 | `strict` (default) | everything | maximum safety |
 
-`REDACT_MODE_FLOOR` is a hard minimum the runtime `redact_mode` tool cannot go
-below — the guard against a prompt-injected model loosening its own protection.
+`REDACT_MODE_FLOOR` is a hard minimum for the mode (env, dashboard and the
+`redact_mode` tool) — the guard against anything (including a prompt-injected
+model) silently turning protection off. To use `disabled`, set the floor to
+`disabled`. The dashboard has a **Official Anthropic** preset button for the
+bypass provider.
 
 ## Install
 

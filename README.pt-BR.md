@@ -92,13 +92,16 @@ camada de formato/entropia trata valores *não registrados*:
 
 | Modo | Redige | Quando usar |
 | --- | --- | --- |
+| `disabled` | nada (bypass total) | destino confiável como a API oficial da Anthropic — exige o piso permitir |
 | `named-only` | só segredos registrados | trabalho interno/teste; token aleatório vazar não importa |
 | `balanced` | registrados + formatos (JWT/PEM/chaves/cookies), sem entropia | pegar o óbvio sem falso-positivo de entropia |
 | `strict` (padrão) | tudo | segurança máxima |
 
-`REDACT_MODE_FLOOR` é um piso rígido que a tool `redact_mode` não consegue
-furar — a proteção contra um modelo sob prompt injection afrouxar a própria
-proteção.
+`REDACT_MODE_FLOOR` é um piso rígido pro modo (env, painel e a tool
+`redact_mode`) — a proteção contra qualquer coisa (inclusive um modelo sob
+prompt injection) desligar a redação em silêncio. Pra usar `disabled`, coloque
+o piso em `disabled`. O painel tem um botão de preset **Official Anthropic** pro
+provedor de bypass.
 
 ## Instalação
 

@@ -64,8 +64,12 @@ const ENTROPY_RULES = [
   { rule: 'high-entropy-base64', re: /[A-Za-z0-9_-]{40,}/g, threshold: 4.5 },
 ];
 
-export const MODES = ['named-only', 'balanced', 'strict'];
-export const MODE_RANK = { 'named-only': 0, balanced: 1, strict: 2 };
+// 'disabled' is a full bypass: no redaction at all (transparent passthrough),
+// for a trusted destination like the official Anthropic API. It is the most
+// permissive rank, so the floor guards it - reaching it requires an explicit
+// REDACT_MODE_FLOOR=disabled.
+export const MODES = ['disabled', 'named-only', 'balanced', 'strict'];
+export const MODE_RANK = { disabled: 0, 'named-only': 1, balanced: 2, strict: 3 };
 
 // Which Layer B rule groups are active per mode. Layer A (named secrets) is
 // ALWAYS on - registering a secret is an explicit opt-in a mode never weakens.
@@ -171,6 +175,19 @@ export function createRedactor({
   ignore = [],
 } = {}) {
   if (!MODES.includes(mode)) throw new Error(`invalid redaction mode: ${mode}`);
+
+  // Full bypass: forward the body untouched. Even registered secrets pass -
+  // this is only for a destination the user explicitly trusts.
+  if (mode === 'disabled') {
+    return {
+      mode,
+      redactBody(raw) {
+        if (typeof raw !== 'string') throw new TypeError('redactBody expects a string body');
+        return { body: raw, events: [] };
+      },
+    };
+  }
+
   const disabled = new Set(disabledRules);
 
   const needles = secrets

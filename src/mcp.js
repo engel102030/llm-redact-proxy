@@ -144,11 +144,12 @@ const TOOLS = [
     name: 'redact_mode',
     description:
       'Read or change how aggressively unregistered secrets are redacted. Call with no ' +
-      'arguments to read the current mode. Modes: "named-only" (only secrets in the list; ' +
-      'zero false positives, use for internal/test work where leaking a random token is ' +
-      'fine), "balanced" (named + recognizable secret shapes like JWT/PEM/API-keys, no ' +
-      'entropy guessing), "strict" (everything, most secure - default). Registered secrets ' +
-      'are ALWAYS redacted regardless of mode. A configured floor may prevent lowering it.',
+      'arguments to read the current mode. Modes: "disabled" (full bypass, NO redaction - ' +
+      'only for a trusted destination like the official Anthropic API; requires the floor to ' +
+      'permit it), "named-only" (only secrets in the list; zero false positives), "balanced" ' +
+      '(named + recognizable shapes like JWT/PEM/API-keys, no entropy guessing), "strict" ' +
+      '(everything, most secure - default). Except in disabled mode, registered secrets are ' +
+      'ALWAYS redacted. A configured floor may prevent lowering it.',
     inputSchema: {
       type: 'object',
       properties: {
