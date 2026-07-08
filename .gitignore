@@ -9,3 +9,6 @@ secrets.local.*
 .env.local
 .DS_Store
 .overclock-app/
+
+# internal project instructions - kept local, not published
+CLAUDE.md
