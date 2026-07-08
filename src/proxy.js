@@ -9,12 +9,7 @@ import https from 'node:https';
 import zlib from 'node:zlib';
 import { injectNotice } from './inject.js';
 import { handleDashboard } from './dashboard.js';
-import {
-  readClaudeOAuth,
-  isAnthropicHost,
-  applyOAuthHeaders,
-  ensureClaudeCodeSystem,
-} from './claude-auth.js';
+import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-auth.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // generous: SSE streams run long
@@ -210,17 +205,11 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
         stats.finish(entry, { status: 502, durationMs: Date.now() - t0 });
         return;
       }
+      // Only the auth token is swapped. The body is passed through UNCHANGED
+      // so a genuine Claude Code request stays byte-identical to what the CLI
+      // would send natively - premium models are unlocked by the request's own
+      // billing-header system block + metadata, which we must never alter.
       applyOAuthHeaders(headers, cred.accessToken);
-      // Premium models require the Claude Code system prompt on a subscription
-      // token. Inject it (only when absent) so the whole model range works.
-      if (outBody && /json/i.test(req.headers['content-type'] ?? '')) {
-        try {
-          const parsed = JSON.parse(outBody.toString('utf8'));
-          if (ensureClaudeCodeSystem(parsed)) outBody = Buffer.from(JSON.stringify(parsed), 'utf8');
-        } catch {
-          // non-JSON body: leave as is
-        }
-      }
     }
     headers.host = up.url.host;
     if (outBody) headers['content-length'] = String(outBody.length);
