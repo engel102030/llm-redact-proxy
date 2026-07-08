@@ -47,6 +47,7 @@ test('GET /v1/models tags every id with [1m] except Haiku; names stay clean; no 
       { id: 'claude-opus-4-7', display_name: 'Claude Opus 4.7', type: 'model' },
       { id: 'claude-sonnet-5', display_name: 'Claude Sonnet 5', type: 'model' },
       { id: 'claude-fable-5', display_name: 'Claude Fable 5', type: 'model' },
+      { id: 'claude-sonnet-4-6', display_name: 'Claude Sonnet 4.6', type: 'model' },
       { id: 'claude-haiku-4-5-20251001', display_name: 'Claude Haiku 4.5', type: 'model' },
     ],
   });
@@ -57,15 +58,17 @@ test('GET /v1/models tags every id with [1m] except Haiku; names stay clean; no 
     const body = await res.json();
     const ids = body.data.map((m) => m.id);
     // same count as upstream (nothing dropped, nothing duplicated)
-    assert.equal(ids.length, 5);
+    assert.equal(ids.length, 6);
     // 1M families get the [1m] suffix
     assert.ok(ids.includes('claude-opus-4-8[1m]'));
     assert.ok(ids.includes('claude-opus-4-7[1m]'));
     assert.ok(ids.includes('claude-sonnet-5[1m]'));
     assert.ok(ids.includes('claude-fable-5[1m]'));
-    // Haiku stays base (no 1M)
+    // Haiku and Sonnet below 5 stay base (no 1M)
     assert.ok(ids.includes('claude-haiku-4-5-20251001'));
     assert.ok(!ids.includes('claude-haiku-4-5-20251001[1m]'));
+    assert.ok(ids.includes('claude-sonnet-4-6'));
+    assert.ok(!ids.includes('claude-sonnet-4-6[1m]'), 'sonnet 4.6 must not get [1m]');
     // display names untouched (clean)
     assert.equal(body.data.find((m) => m.id === 'claude-opus-4-8[1m]').display_name, 'Claude Opus 4.8');
   } finally {

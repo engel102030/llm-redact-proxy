@@ -78,10 +78,10 @@ function blockRequest(res, reason) {
 
 // A proxied host can't learn the upstream context window from /v1/models, so
 // the proxy tags every model id with the "[1m]" suffix (which Claude Code reads
-// to use a 1M local window) EXCEPT models that don't support 1M (Haiku). The
-// display name is left clean ("Claude Opus 4.8", not "... [1m]") and no models
-// are dropped or duplicated - each appears once with the right id.
-const NO_ONE_M = /haiku/i;
+// to use a 1M local window) EXCEPT models that don't support 1M: Haiku (any),
+// and Sonnet below 5 (sonnet-4.x). The display name is left clean ("Claude Opus
+// 4.8", not "... [1m]") and no models are dropped or duplicated.
+const NO_ONE_M = /haiku|sonnet-4/i;
 
 function tagOneMIds(list) {
   if (!list || !Array.isArray(list.data)) return list;
