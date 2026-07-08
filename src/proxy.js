@@ -81,7 +81,11 @@ export function createProxyServer({ config, redactor, stats }) {
 
   return http.createServer(async (req, res) => {
     if ((req.url ?? '').startsWith('/__redact')) {
-      handleDashboard(req, res, stats);
+      handleDashboard(req, res, stats, {
+        upstream: config.upstreamUrl?.href ?? null,
+        mode: config.redactMode ?? null,
+        failClosed: config.failClosed,
+      });
       return;
     }
 
@@ -94,6 +98,9 @@ export function createProxyServer({ config, redactor, stats }) {
       return;
     }
 
+    const t0 = Date.now();
+    const reqBytes = rawBuffer.length;
+    let entry = null;
     let outBody = null;
     let keepContentEncoding = false;
     if (rawBuffer.length > 0) {
@@ -114,11 +121,11 @@ export function createProxyServer({ config, redactor, stats }) {
             // Non-JSON body: the markers alone carry the signal.
           }
         }
-        stats.record({ method: req.method, path: req.url, events });
+        entry = stats.record({ method: req.method, path: req.url, events, reqBytes });
         outBody = Buffer.from(finalBody, 'utf8');
       } catch (err) {
         if (config.failClosed) {
-          stats.record({ method: req.method, path: req.url, blocked: true, reason: err.message });
+          stats.record({ method: req.method, path: req.url, blocked: true, reason: err.message, reqBytes });
           blockRequest(res, err.message);
           return;
         }
@@ -126,12 +133,12 @@ export function createProxyServer({ config, redactor, stats }) {
           `[redact] WARNING: redaction failed (${err.message}) and FAIL_CLOSED=false - ` +
             'forwarding the RAW body. This can leak secrets.',
         );
-        stats.record({ method: req.method, path: req.url, events: [] });
+        entry = stats.record({ method: req.method, path: req.url, events: [], reqBytes });
         outBody = rawBuffer;
         keepContentEncoding = true;
       }
     } else {
-      stats.record({ method: req.method, path: req.url, events: [] });
+      entry = stats.record({ method: req.method, path: req.url, events: [], reqBytes });
     }
 
     const headers = {};
@@ -170,6 +177,40 @@ export function createProxyServer({ config, redactor, stats }) {
           responseHeaders[key] = value;
         }
         res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+
+        // Tap the response ONLY to read token-usage numbers and byte count for
+        // the dashboard - the body is never stored or logged. A small carry
+        // handles a usage number split across chunk boundaries. Adding a data
+        // listener alongside pipe() keeps the stream unbuffered.
+        let respBytes = 0;
+        let inTok = null;
+        let outTok = null;
+        let carry = '';
+        const scan = (s) => {
+          const textChunk = carry + s;
+          for (const m of textChunk.matchAll(/"input_tokens":\s*(\d+)/g)) {
+            const v = Number(m[1]);
+            if (inTok === null || v > inTok) inTok = v;
+          }
+          for (const m of textChunk.matchAll(/"output_tokens":\s*(\d+)/g)) {
+            const v = Number(m[1]);
+            if (outTok === null || v > outTok) outTok = v;
+          }
+          carry = textChunk.slice(-64);
+        };
+        upstreamRes.on('data', (chunk) => {
+          respBytes += chunk.length;
+          scan(chunk.toString('utf8'));
+        });
+        upstreamRes.on('end', () =>
+          stats.finish(entry, {
+            status: upstreamRes.statusCode ?? null,
+            durationMs: Date.now() - t0,
+            inputTokens: inTok,
+            outputTokens: outTok,
+            respBytes,
+          }),
+        );
         // Unbuffered passthrough: SSE chunks stream straight back.
         upstreamRes.pipe(res);
       },
@@ -177,6 +218,7 @@ export function createProxyServer({ config, redactor, stats }) {
 
     upstreamReq.on('timeout', () => upstreamReq.destroy(new Error('upstream timeout')));
     upstreamReq.on('error', (err) => {
+      stats.finish(entry, { status: 502, durationMs: Date.now() - t0 });
       if (res.headersSent) {
         res.destroy();
         return;
