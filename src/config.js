@@ -100,13 +100,32 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
   // The floor is a hard minimum; a starting mode below it is clamped up.
   const redactMode = MODE_RANK[requestedMode] < MODE_RANK[floor] ? floor : requestedMode;
 
+  // Two secret stores, both checked for redaction:
+  //   global  = SECRETS_FILE (typically an absolute path outside any repo)
+  //   project = PROJECT_SECRETS_FILE, default ./secrets.local relative to the
+  //             working dir (the project Claude Code was launched in)
+  const globalSecretsFile = path.resolve(cwd, get('SECRETS_FILE'));
+  const projectSecretsFile = path.resolve(
+    cwd,
+    env.PROJECT_SECRETS_FILE ?? fileVars.PROJECT_SECRETS_FILE ?? './secrets.local',
+  );
+  // Ordered sources; loader dedups identical paths (standalone in-repo run has
+  // both pointing at the same file).
+  const secretSources = [
+    { scope: 'global', path: globalSecretsFile },
+    { scope: 'project', path: projectSecretsFile },
+  ];
+
   return {
     listenHost,
     listenPort,
     upstreamUrl,
     upstreamAuth,
     upstreamKey,
-    secretsFile: path.resolve(cwd, get('SECRETS_FILE')),
+    secretsFile: globalSecretsFile, // kept for back-compat
+    globalSecretsFile,
+    projectSecretsFile,
+    secretSources,
     failClosed: get('FAIL_CLOSED') !== 'false',
     injectNotice: get('INJECT_NOTICE') !== 'false',
     redactMode,

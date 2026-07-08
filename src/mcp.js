@@ -5,8 +5,9 @@
 //
 // stdout is reserved for JSON-RPC; ALL logging goes to stderr.
 import fs from 'node:fs';
+import path from 'node:path';
 import { loadConfig } from './config.js';
-import { loadSecrets, MIN_SECRET_LENGTH } from './secrets.js';
+import { loadSecretsFromSources, MIN_SECRET_LENGTH } from './secrets.js';
 import { createRedactor, MODES, MODE_RANK } from './redact.js';
 import { createStats } from './stats.js';
 import { createProxyServer } from './proxy.js';
@@ -17,7 +18,7 @@ const log = (line) => process.stderr.write(`${line}\n`);
 
 const config = loadConfig({ requireUpstream: false });
 
-let secrets = loadSecrets(config.secretsFile);
+let secrets = loadSecretsFromSources(config.secretSources);
 let currentMode = config.redactMode;
 
 function build() {
@@ -31,12 +32,17 @@ function build() {
 const holder = { current: build() };
 
 function reload() {
-  secrets = loadSecrets(config.secretsFile);
+  secrets = loadSecretsFromSources(config.secretSources);
   holder.current = build();
-  log(`[redact] secrets reloaded: ${secrets.length} name(s)`);
+  const g = secrets.filter((s) => s.source === 'global').length;
+  const p = secrets.filter((s) => s.source === 'project').length;
+  log(`[redact] secrets reloaded: ${secrets.length} name(s) (global ${g}, project ${p})`);
 }
-// Pick up manual edits to the secrets file without a restart.
-fs.watchFile(config.secretsFile, { interval: 2000 }, reload);
+// Pick up manual edits to either secrets file without a restart. Distinct
+// paths only (global and project may resolve to the same file).
+for (const filePath of new Set(config.secretSources.map((s) => s.path))) {
+  fs.watchFile(filePath, { interval: 2000 }, reload);
+}
 
 const stats = createStats({ log });
 const runner = createRunner({
@@ -65,23 +71,34 @@ if (config.upstreamUrl) {
 }
 
 // ---- secrets file upsert --------------------------------------------------
-function upsertSecret(name, value) {
-  let text = '';
-  try {
-    text = fs.readFileSync(config.secretsFile, 'utf8');
-  } catch {
-    // File does not exist yet; it will be created below.
+// scope: 'global' | 'project' | 'both'. Returns the scopes actually written.
+function upsertSecret(name, value, scope = 'global') {
+  const targets = [];
+  if (scope === 'global' || scope === 'both') targets.push(config.globalSecretsFile);
+  if (scope === 'project' || scope === 'both') targets.push(config.projectSecretsFile);
+  // Dedup: global and project may resolve to the same file.
+  const paths = [...new Set(targets)];
+
+  for (const filePath of paths) {
+    let text = '';
+    try {
+      text = fs.readFileSync(filePath, 'utf8');
+    } catch {
+      // File does not exist yet; it will be created below.
+    }
+    const line = `${name}=${value}`;
+    const re = new RegExp(`^${name}=.*$`, 'm');
+    if (re.test(text)) {
+      text = text.replace(re, line);
+    } else {
+      if (text && !text.endsWith('\n')) text += '\n';
+      text += `${line}\n`;
+    }
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, text, { mode: 0o600 });
   }
-  const line = `${name}=${value}`;
-  const re = new RegExp(`^${name}=.*$`, 'm');
-  if (re.test(text)) {
-    text = text.replace(re, line);
-  } else {
-    if (text && !text.endsWith('\n')) text += '\n';
-    text += `${line}\n`;
-  }
-  fs.writeFileSync(config.secretsFile, text, { mode: 0o600 });
   reload();
+  return paths.length;
 }
 
 // ---- MCP tools ------------------------------------------------------------
@@ -113,10 +130,11 @@ const TOOLS = [
   {
     name: 'secret_add',
     description:
-      'Register a secret VALUE under a NAME in the local gitignored secrets file. From then ' +
-      'on the value is redacted from all outgoing LLM traffic and can be used in the run ' +
-      'tool as {{NAME}} or $NAME. Use when the user shares a new credential or a token ' +
-      'appears at runtime. The value is never echoed back.',
+      'Register a secret VALUE under a NAME so it is redacted from all outgoing LLM traffic ' +
+      'and usable in the run tool as {{NAME}} or $NAME. Use when the user shares a new ' +
+      'credential or a token appears at runtime. The value is never echoed back. Choose ' +
+      'the scope: "global" (shared across all projects), "project" (only this project\'s ' +
+      'secrets file), or "both". If unsure which scope, ask the user.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -125,13 +143,20 @@ const TOOLS = [
           description: 'Identifier, e.g. MYSQL_PASSWORD (letters, digits, underscore)',
         },
         value: { type: 'string', description: 'The secret value (min 6 chars)' },
+        scope: {
+          type: 'string',
+          enum: ['global', 'project', 'both'],
+          description: 'Where to store it (default global)',
+        },
       },
       required: ['name', 'value'],
     },
   },
   {
     name: 'secret_list',
-    description: 'List the NAMES of registered secrets. Values are never returned by any tool.',
+    description:
+      'List the NAMES of registered secrets, grouped by scope (global / project). Values ' +
+      'are never returned by any tool.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -177,6 +202,7 @@ async function callTool(name, args) {
     }
     case 'secret_add': {
       const { name: secretName, value } = args;
+      const scope = args.scope ?? 'global';
       if (typeof secretName !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(secretName)) {
         return { content: [{ type: 'text', text: 'error: invalid name (use letters, digits, underscore)' }], isError: true };
       }
@@ -186,15 +212,26 @@ async function callTool(name, args) {
       if (/[\r\n]/.test(value)) {
         return { content: [{ type: 'text', text: 'error: value must not contain newlines' }], isError: true };
       }
-      upsertSecret(secretName, value);
+      if (!['global', 'project', 'both'].includes(scope)) {
+        return { content: [{ type: 'text', text: 'error: scope must be global, project or both' }], isError: true };
+      }
+      const written = upsertSecret(secretName, value, scope);
+      const where = scope === 'both' && written === 1 ? 'global (project resolves to the same file)' : scope;
       return text(
-        `secret ${secretName} registered (${value.length} chars, value never echoed). ` +
+        `secret ${secretName} registered in ${where} (${value.length} chars, value never echoed). ` +
           `It is now redacted from outgoing traffic and usable in run as {{${secretName}}} or $${secretName}.`,
       );
     }
     case 'secret_list': {
-      const names = secrets.map((s) => s.name).sort();
-      return text(names.length ? names.join('\n') : 'no secrets registered yet');
+      if (secrets.length === 0) return text('no secrets registered yet');
+      const byScope = { global: [], project: [] };
+      for (const s of secrets) (byScope[s.source] ?? (byScope[s.source] = [])).push(s.name);
+      const lines = [];
+      for (const scope of ['global', 'project']) {
+        const names = (byScope[scope] ?? []).sort();
+        if (names.length) lines.push(`[${scope}]`, ...names.map((n) => `  ${n}`));
+      }
+      return text(lines.join('\n'));
     }
     case 'redaction_stats':
       return text(JSON.stringify(stats.toJSON(), null, 2));
@@ -238,4 +275,5 @@ createRpcServer({
   },
 });
 
+log(`[redact] secret stores: global=${config.globalSecretsFile} project=${config.projectSecretsFile}`);
 log(`[redact] MCP server ready (secrets: ${secrets.length}, proxy: ${config.upstreamUrl ? 'enabled' : 'off'})`);

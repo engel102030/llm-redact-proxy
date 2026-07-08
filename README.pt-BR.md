@@ -77,7 +77,7 @@ inicia tudo automaticamente. Tools:
 | Tool | O que faz |
 | --- | --- |
 | `run` | Executa um comando **localmente** com placeholders `{{NOME}}` (ou env vars `$NOME`) resolvidos para os valores reais. O output volta **já redigido**. O segredo nunca entra no contexto do modelo — a 1ª linha de defesa; o proxy é a rede de segurança. |
-| `secret_add` | Registra um segredo novo (upsert no `secrets.local`, chmod 600, hot-reload). O valor nunca é ecoado de volta. |
+| `secret_add` | Registra um segredo novo com um `scope` (`global`, `project` ou `both`); grava no(s) arquivo(s) escolhido(s), chmod 600, hot-reload. O valor nunca é ecoado de volta. |
 | `secret_list` | Só os nomes. |
 | `redact_mode` | Lê/muda o modo de redação em runtime (protegido por piso, veja abaixo). |
 | `redaction_stats` | Contadores e nomes de regras. Nunca valores. |
@@ -143,7 +143,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 | --- | --- | --- |
 | `LISTEN_ADDR` | `127.0.0.1:8788` | Onde o proxy escuta. Só loopback — qualquer outra coisa é recusada. |
 | `UPSTREAM_URL` | — | Endpoint do vendor para onde os requests redigidos são encaminhados. |
-| `SECRETS_FILE` | `./secrets.local` | `NOME=VALOR` por linha. Gitignored. Hot-reload ao mudar. |
+| `SECRETS_FILE` | `./secrets.local` | Store global, `NOME=VALOR` por linha. Gitignored. Hot-reload. Geralmente caminho absoluto fora de repo. |
+| `PROJECT_SECRETS_FILE` | `./secrets.local` | Store opcional por projeto, checado além do global. Ambos são redigidos. |
 | `UPSTREAM_AUTH` | `passthrough` | `passthrough` encaminha o header de auth do CLI; `replace` troca por `UPSTREAM_KEY`. |
 | `FAIL_CLOSED` | `true` | Em erro de redação: bloqueia (true) ou encaminha cru com aviso ruidoso (false — não recomendado). |
 | `INJECT_NOTICE` | `true` | Anexa o aviso de redação ao system prompt quando algo foi redigido. |

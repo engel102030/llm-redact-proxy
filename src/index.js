@@ -1,12 +1,12 @@
 // Entrypoint: load config + secrets, build the redactor, start the proxy.
 import { loadConfig } from './config.js';
-import { loadSecrets } from './secrets.js';
+import { loadSecretsFromSources } from './secrets.js';
 import { createRedactor } from './redact.js';
 import { createStats } from './stats.js';
 import { createProxyServer } from './proxy.js';
 
 const config = loadConfig();
-const secrets = loadSecrets(config.secretsFile);
+const secrets = loadSecretsFromSources(config.secretSources);
 const redactor = createRedactor({
   secrets,
   mode: config.redactMode,

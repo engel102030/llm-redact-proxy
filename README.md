@@ -74,7 +74,7 @@ CLI starts everything automatically. Tools:
 | Tool | What it does |
 | --- | --- |
 | `run` | Execute a command **locally** with `{{NAME}}` placeholders (or `$NAME` env vars) resolved to real values. Output returns **already redacted**. The secret never enters the model context at all — the 1st line of defense; the proxy is the safety net. |
-| `secret_add` | Register a new secret (upsert into `secrets.local`, chmod 600, hot-reload). Value never echoed back. |
+| `secret_add` | Register a new secret with a `scope` (`global`, `project`, or `both`); upserts into the chosen store(s), chmod 600, hot-reload. Value never echoed back. |
 | `secret_list` | Names only. |
 | `redact_mode` | Read/change the redaction mode at runtime (floor-guarded, see below). |
 | `redaction_stats` | Counters and rule names. Never values. |
@@ -138,7 +138,8 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 | --- | --- | --- |
 | `LISTEN_ADDR` | `127.0.0.1:8788` | Where the proxy listens. Loopback only — anything else is refused. |
 | `UPSTREAM_URL` | — | The vendor endpoint redacted requests are forwarded to. |
-| `SECRETS_FILE` | `./secrets.local` | `NAME=VALUE` per line. Gitignored. Hot-reloaded on change. |
+| `SECRETS_FILE` | `./secrets.local` | Global secrets store, `NAME=VALUE` per line. Gitignored. Hot-reloaded. Usually an absolute path outside any repo. |
+| `PROJECT_SECRETS_FILE` | `./secrets.local` | Optional per-project store, checked in addition to the global one. Both are redacted. |
 | `UPSTREAM_AUTH` | `passthrough` | `passthrough` forwards the CLI's auth header; `replace` swaps in `UPSTREAM_KEY`. |
 | `FAIL_CLOSED` | `true` | On redaction error: block (true) or forward raw with a loud warning (false — not recommended). |
 | `INJECT_NOTICE` | `true` | Append the redaction notice to the system prompt when something was redacted. |
