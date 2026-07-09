@@ -22,6 +22,20 @@ function upstreamServing(payload) {
   });
 }
 
+// A gateway that only proxies /v1/messages and rejects /v1/models.
+function upstreamRejectingModels(status, payload) {
+  const server = http.createServer((req, res) => {
+    res.writeHead(status, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      resolve({ url: `http://127.0.0.1:${port}`, close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
 async function startProxyWith(upstreamUrl) {
   const config = {
     upstreamUrl: new URL(upstreamUrl),
@@ -71,6 +85,35 @@ test('GET /v1/models tags every id with [1m] except Haiku; names stay clean; no 
     assert.ok(!ids.includes('claude-sonnet-4-6[1m]'), 'sonnet 4.6 must not get [1m]');
     // display names untouched (clean)
     assert.equal(body.data.find((m) => m.id === 'claude-opus-4-8[1m]').display_name, 'Claude Opus 4.8');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('GET /v1/models synthesizes the canonical list when the gateway rejects it (501)', async () => {
+  // Most gateways only relay /v1/messages and answer /v1/models with an error.
+  // The host must still get a usable, [1m]-tagged model picker.
+  const upstream = await upstreamRejectingModels(501, {
+    type: 'error',
+    error: { type: 'not_implemented', message: 'endpoint /v1/models not supported' },
+  });
+  const proxy = await startProxyWith(upstream.url);
+  try {
+    const res = await fetch(`${proxy.url}/v1/models`);
+    assert.equal(res.status, 200, 'must not pass the 501 through');
+    const body = await res.json();
+    assert.ok(Array.isArray(body.data) && body.data.length >= 8, 'canonical list served');
+    const ids = body.data.map((m) => m.id);
+    assert.ok(ids.includes('claude-opus-4-8[1m]'));
+    assert.ok(ids.includes('claude-sonnet-5[1m]'));
+    assert.ok(ids.includes('claude-fable-5[1m]'));
+    // Haiku and Sonnet 4.x stay base even in the synthesized list.
+    assert.ok(ids.some((id) => id.startsWith('claude-haiku-4-5') && !id.endsWith('[1m]')));
+    assert.ok(ids.some((id) => id.startsWith('claude-sonnet-4-6') && !id.endsWith('[1m]')));
+    // Envelope is valid: first/last ids reference tagged ids present in data.
+    assert.ok(ids.includes(body.first_id));
+    assert.ok(ids.includes(body.last_id));
   } finally {
     await proxy.close();
     await upstream.close();

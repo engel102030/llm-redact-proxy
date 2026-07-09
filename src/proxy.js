@@ -10,6 +10,7 @@ import zlib from 'node:zlib';
 import { injectNotice } from './inject.js';
 import { handleDashboard } from './dashboard.js';
 import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-auth.js';
+import { buildModelsResponse } from './models.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // generous: SSE streams run long
@@ -74,24 +75,6 @@ function blockRequest(res, reason) {
       },
     }),
   );
-}
-
-// A proxied host can't learn the upstream context window from /v1/models, so
-// the proxy tags every model id with the "[1m]" suffix (which Claude Code reads
-// to use a 1M local window) EXCEPT models that don't support 1M: Haiku (any),
-// and Sonnet below 5 (sonnet-4.x). The display name is left clean ("Claude Opus
-// 4.8", not "... [1m]") and no models are dropped or duplicated.
-const NO_ONE_M = /haiku|sonnet-4/i;
-
-function tagOneMIds(list) {
-  if (!list || !Array.isArray(list.data)) return list;
-  list.data = list.data.map((m) => {
-    if (m && typeof m.id === 'string' && !NO_ONE_M.test(m.id) && !m.id.endsWith('[1m]')) {
-      return { ...m, id: `${m.id}[1m]` }; // clean display_name kept as-is
-    }
-    return m;
-  });
-  return list;
 }
 
 export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth }) {
@@ -281,17 +264,17 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             rawBytes += c.length;
           });
           src.on('data', (c) => chunks.push(c));
-          const sendModels = (status) => {
-            let outBuf;
-            try {
-              const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-              outBuf = Buffer.from(JSON.stringify(tagOneMIds(parsed)), 'utf8');
-            } catch {
-              outBuf = Buffer.concat(chunks);
-            }
+          const sendModels = (upstreamStatus) => {
+            // Tag the gateway's list, or synthesize the canonical one when the
+            // gateway does not serve /v1/models (error / non-list) - the host
+            // must still get a usable model picker. Always a 200.
+            const rawBody = Buffer.concat(chunks).toString('utf8');
+            const { status, body } = buildModelsResponse(upstreamStatus, rawBody);
+            const outBuf = Buffer.from(JSON.stringify(body), 'utf8');
             const h = { ...responseHeaders };
             delete h['content-encoding'];
             delete h['content-length'];
+            h['content-type'] = 'application/json';
             h['content-length'] = String(outBuf.length);
             res.writeHead(status, h);
             res.end(outBuf);
