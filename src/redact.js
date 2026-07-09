@@ -142,14 +142,23 @@ function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, ev
   };
 }
 
-function walkStrings(node, fn) {
-  if (typeof node === 'string') return fn(node);
-  if (Array.isArray(node)) return node.map((n) => walkStrings(n, fn));
+// Dotted JSON paths whose string value is a client PROTOCOL identifier, not
+// user data - redacting it corrupts a field the vendor validates (some
+// gateways reject the request outright) for zero security gain. metadata.user_id
+// is Claude Code's device/account hash: an opaque, per-install constant that
+// contains no credential. Arrays do not extend the path, so this matches
+// regardless of message nesting.
+export const PROTECTED_PATHS = new Set(['metadata.user_id']);
+
+function walkStrings(node, fn, protectedPaths = PROTECTED_PATHS, path = '') {
+  if (typeof node === 'string') return protectedPaths.has(path) ? node : fn(node);
+  if (Array.isArray(node)) return node.map((n) => walkStrings(n, fn, protectedPaths, path));
   if (node && typeof node === 'object') {
     const out = {};
     for (const [key, value] of Object.entries(node)) {
       // Keys are strings too - a token used as a map key must not survive.
-      out[fn(key)] = walkStrings(value, fn);
+      const childPath = path ? `${path}.${key}` : key;
+      out[fn(key)] = walkStrings(value, fn, protectedPaths, childPath);
     }
     return out;
   }
