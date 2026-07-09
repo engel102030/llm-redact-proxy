@@ -22,7 +22,7 @@ export function createStats({ log = console.log } = {}) {
   // Opens a request record (called when the request is redacted/forwarded or
   // blocked). Returns the entry so the caller can finish() it once the
   // upstream response completes.
-  function record({ method = '-', path = '-', events = [], blocked = false, reason = null, reqBytes = 0 }) {
+  function record({ method = '-', path = '-', events = [], captures = [], blocked = false, reason = null, reqBytes = 0 }) {
     totals.requests += 1;
     let count = 0;
     for (const e of events) {
@@ -41,6 +41,10 @@ export function createStats({ log = console.log } = {}) {
       path: safePath(path),
       redactions: count,
       rules: events.map((e) => `${e.rule} x${e.count}`),
+      // Actual matched values, retained ONLY when the caller opted in (else []).
+      // Held here in memory; served exclusively via the guarded reveal method,
+      // never through toJSON() / the open stats feed.
+      captures: Array.isArray(captures) ? captures : [],
       blocked,
       reason,
       status: blocked ? 'blocked' : null,
@@ -78,15 +82,34 @@ export function createStats({ log = console.log } = {}) {
     log(`[redact] ${entry.method} ${entry.path} -> ${status ?? '-'} ${durationMs ?? '?'}ms${tok}`);
   }
 
+  // Open feed: NEVER includes matched values. Strips captures from every entry.
   function toJSON() {
     return {
       startedAt,
       uptimeSec: Math.floor((Date.now() - startedAtMs) / 1000),
       totals: { ...totals },
       perRule: Object.fromEntries(perRule),
-      recent: [...recent],
+      recent: recent.map(({ captures, ...rest }) => rest),
     };
   }
 
-  return { record, finish, toJSON };
+  // Guarded reveal: the actual matched values. Only served to the local panel
+  // via the CSRF-guarded /__redact/values endpoint. Per-request captures plus a
+  // per-rule set of distinct values (from the retained recent window).
+  function revealValues() {
+    const perRuleValues = {};
+    for (const e of recent) {
+      for (const { rule, value } of e.captures ?? []) {
+        (perRuleValues[rule] ??= new Set()).add(value);
+      }
+    }
+    return {
+      recent: recent.map((e) => ({ id: e.id, captures: e.captures ?? [] })),
+      perRuleValues: Object.fromEntries(
+        Object.entries(perRuleValues).map(([rule, set]) => [rule, [...set]]),
+      ),
+    };
+  }
+
+  return { record, finish, toJSON, revealValues };
 }

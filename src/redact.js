@@ -100,8 +100,18 @@ function buildIgnoreMatcher(ignore = []) {
   return (span) => literals.has(span) || regexes.some((re) => re.test(span));
 }
 
-function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, events) {
+// captures (optional) is a Map<rule, Set<value>> collecting the ACTUAL matched
+// text per rule - populated ONLY when the caller opted in (captureValues). When
+// null, no value is ever retained (the default, safest behaviour).
+function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, events, captures) {
   const bump = (rule, n = 1) => events.set(rule, (events.get(rule) ?? 0) + n);
+  const keep = captures
+    ? (rule, value) => {
+        let set = captures.get(rule);
+        if (!set) captures.set(rule, (set = new Set()));
+        set.add(value);
+      }
+    : () => {};
 
   return function redactString(input) {
     let text = input;
@@ -111,18 +121,20 @@ function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, ev
       if (text.includes(needle)) {
         const parts = text.split(needle);
         bump(name, parts.length - 1);
+        keep(name, needle);
         text = parts.join(marker(name));
       }
     }
 
     // Layer B: shape rules.
-    for (const { rule, re, keep } of regexRules) {
+    for (const { rule, re, keep: keepGroups } of regexRules) {
       text = text.replace(re, (...args) => {
         const match = args[0];
         let prefix = '';
-        for (let g = 1; g <= (keep ?? 0); g += 1) prefix += args[g];
+        for (let g = 1; g <= (keepGroups ?? 0); g += 1) prefix += args[g];
         if (isIgnored(match) || isIgnored(match.slice(prefix.length))) return match;
         bump(rule);
+        keep(rule, match.slice(prefix.length)); // the credential, without the kept prefix
         return prefix + marker(rule);
       });
     }
@@ -134,6 +146,7 @@ function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, ev
         if (shannonEntropy(match) < threshold) return match;
         if (isIgnored(match)) return match;
         bump(rule);
+        keep(rule, match);
         return marker(rule);
       });
     }
@@ -192,7 +205,7 @@ export function createRedactor({
       mode,
       redactBody(raw) {
         if (typeof raw !== 'string') throw new TypeError('redactBody expects a string body');
-        return { body: raw, events: [] };
+        return { body: raw, events: [], captures: [] };
       },
     };
   }
@@ -212,10 +225,19 @@ export function createRedactor({
   const isIgnored = buildIgnoreMatcher(ignore);
   const engine = { needles, regexRules, entropyRules, isIgnored };
 
-  function redactBody(raw, contentType = '') {
+  function redactBody(raw, contentType = '', { captureValues = false } = {}) {
     if (typeof raw !== 'string') throw new TypeError('redactBody expects a string body');
     const events = new Map();
-    const redactString = makeStringRedactor(engine, events);
+    // Only allocate the value store when the caller opted in - otherwise no
+    // matched value is ever retained.
+    const captures = captureValues ? new Map() : null;
+    const keep = (rule, value) => {
+      if (!captures) return;
+      let set = captures.get(rule);
+      if (!set) captures.set(rule, (set = new Set()));
+      set.add(value);
+    };
+    const redactString = makeStringRedactor(engine, events, captures);
 
     let out = null;
     const looksJson = /json/i.test(contentType) || /^\s*[{[]/.test(raw);
@@ -236,6 +258,7 @@ export function createRedactor({
           if (serialized.includes(needle)) {
             const parts = serialized.split(needle);
             events.set(name, (events.get(name) ?? 0) + parts.length - 1);
+            keep(name, needle);
             serialized = parts.join(marker(name));
           }
         }
@@ -245,10 +268,13 @@ export function createRedactor({
     if (out === null) out = redactString(raw);
 
     const eventList = [...events.entries()].map(([rule, count]) => ({ rule, count }));
+    const captureList = captures
+      ? [...captures.entries()].flatMap(([rule, set]) => [...set].map((value) => ({ rule, value })))
+      : [];
     // Nothing matched: return the original bytes untouched (no
     // reserialization drift for clean bodies).
-    if (eventList.length === 0) return { body: raw, events: [] };
-    return { body: out, events: eventList };
+    if (eventList.length === 0) return { body: raw, events: [], captures: [] };
+    return { body: out, events: eventList, captures: captureList };
   }
 
   return { redactBody, mode };

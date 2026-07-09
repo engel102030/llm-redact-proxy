@@ -135,5 +135,7 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
     redactIgnore: splitList(get('REDACT_IGNORE')),
     // OPT-IN: restore {{NAME}} placeholders to real values in the response.
     restoreMarkers: get('RESTORE_MARKERS') === 'true',
+    // OPT-IN: retain matched values in memory and reveal them in the local panel.
+    showRedactedValues: get('SHOW_REDACTED_VALUES') === 'true',
   };
 }

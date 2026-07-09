@@ -39,7 +39,7 @@ const runner = createRunner({
 
 // ---- embedded proxy (always on: serves the dashboard even before a provider
 // is configured, so the whole thing is set up from the panel).
-const liveRedactor = { redactBody: (raw, ct) => runtime.holder.current.redactBody(raw, ct) };
+const liveRedactor = { redactBody: (raw, ct, opts) => runtime.holder.current.redactBody(raw, ct, opts) };
 const server = createProxyServer({
   config,
   redactor: liveRedactor,

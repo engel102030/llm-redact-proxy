@@ -12,7 +12,7 @@ const config = loadConfig({ requireUpstream: false });
 const secrets = loadSecrets(config.secretsFile);
 const runtime = createRuntime({ config, secrets });
 const stats = createStats();
-const liveRedactor = { redactBody: (raw, ct) => runtime.holder.current.redactBody(raw, ct) };
+const liveRedactor = { redactBody: (raw, ct, opts) => runtime.holder.current.redactBody(raw, ct, opts) };
 const server = createProxyServer({
   config,
   redactor: liveRedactor,

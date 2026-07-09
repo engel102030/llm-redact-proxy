@@ -155,6 +155,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 | `REDACT_DISABLE` | — | Comma-separated rule names to turn off (e.g. `high-entropy-hex,jwt`). |
 | `REDACT_IGNORE` | — | Comma-separated known-safe values or `/regex/` patterns — never redacted. |
 | `RESTORE_MARKERS` | `false` | **Opt-in.** Restore `{{NAME}}` placeholders in the response to the real value (see below). Toggle live in the dashboard. |
+| `SHOW_REDACTED_VALUES` | `false` | **Opt-in.** Reveal the actual matched values in the local dashboard (see below). Toggle live in the dashboard. |
 
 ### Response restore (`{{NAME}}`) — opt-in
 
@@ -177,9 +178,23 @@ system-prompt notice teaches the model to use `{{NAME}}`.
 
 ## Dashboard
 
-`http://127.0.0.1:8788/__redact/` — totals, per-rule counts, recent requests.
-`/__redact/stats.json` for JSON. Rule names and counts only; **values are never
-shown, stored or logged** anywhere in this project.
+`http://127.0.0.1:8788/__redact/` — provider configuration, totals, per-rule
+counts, and a live request table. `/__redact/stats.json` is the open feed and
+**never carries a secret value** — rule names and counts only.
+
+### Reveal matched values (`SHOW_REDACTED_VALUES`) — opt-in
+
+By default the panel shows only rule names and counts. Turn on **"show redacted
+values"** (dashboard toggle or `SHOW_REDACTED_VALUES=true`) and the panel reveals
+the actual matched values — both your registered secrets (Layer A) and any
+dynamic token caught by shape/entropy (Layer B), which is the useful case: it
+shows what actually leaked. Click a value to copy it.
+
+Off by default, because it changes the posture: the proxy then retains matched
+values in memory. They are still kept out of the open `stats.json` and served
+only to the local panel over a **CSRF-guarded** `/__redact/values` endpoint (a
+custom header a cross-site page cannot set). It is your own local screen showing
+your own credentials — but treat that screen accordingly.
 
 ## Testing
 

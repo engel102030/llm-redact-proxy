@@ -14,6 +14,9 @@ export function createRuntime({ config, secrets = [] }) {
   // into the local transcript). See src/rehydrate.js.
   let restoreMarkers = config.restoreMarkers ?? false;
   let markerMap = buildMarkerMap(currentSecrets);
+  // OPT-IN: retain the actual matched values so the local panel can reveal them.
+  // Off means the redactor is never asked to capture, so nothing is retained.
+  let showRedactedValues = config.showRedactedValues ?? false;
 
   // Mutated in place so the proxy, reading runtime.upstream each request, sees
   // provider changes immediately.
@@ -63,6 +66,9 @@ export function createRuntime({ config, secrets = [] }) {
     if (patch.restoreMarkers !== undefined) {
       restoreMarkers = patch.restoreMarkers === true || patch.restoreMarkers === 'true';
     }
+    if (patch.showRedactedValues !== undefined) {
+      showRedactedValues = patch.showRedactedValues === true || patch.showRedactedValues === 'true';
+    }
     if (upstream.auth === 'replace' && !upstream.key) {
       throw new Error('upstreamAuth=replace requires a key');
     }
@@ -82,6 +88,7 @@ export function createRuntime({ config, secrets = [] }) {
       upstreamKey: upstream.key ?? null,
       redactMode: mode,
       restoreMarkers,
+      showRedactedValues,
     };
   }
 
@@ -96,6 +103,7 @@ export function createRuntime({ config, secrets = [] }) {
       redactModeFloor: config.redactModeFloor,
       modes: MODES,
       restoreMarkers,
+      showRedactedValues,
     };
   }
 
@@ -135,6 +143,9 @@ export function createRuntime({ config, secrets = [] }) {
     getRestore,
     get restoreMarkers() {
       return restoreMarkers;
+    },
+    get showRedactedValues() {
+      return showRedactedValues;
     },
   };
 }

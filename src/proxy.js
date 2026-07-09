@@ -152,7 +152,13 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
       try {
         const decompressed = decompress(rawBuffer, req.headers['content-encoding']);
         const text = decompressed.toString('utf8');
-        const { body, events } = redactor.redactBody(text, req.headers['content-type'] ?? '');
+        // Capture matched values only when the panel opted in to reveal them.
+        const captureValues = controller?.showRedactedValues ?? false;
+        const { body, events, captures } = redactor.redactBody(
+          text,
+          req.headers['content-type'] ?? '',
+          { captureValues },
+        );
 
         let finalBody = body;
         if (events.length > 0 && config.injectNotice) {
@@ -166,7 +172,7 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             // Non-JSON body: the markers alone carry the signal.
           }
         }
-        entry = stats.record({ method: req.method, path: req.url, events, reqBytes });
+        entry = stats.record({ method: req.method, path: req.url, events, captures, reqBytes });
         outBody = Buffer.from(finalBody, 'utf8');
       } catch (err) {
         if (config.failClosed) {
