@@ -19,6 +19,10 @@ test('buildNotice adds the {{NAME}} restore rule only when restore is on', () =>
   const on = buildNotice(['DB_PASSWORD'], { restore: true });
   assert.ok(on.includes('RESPONSE RESTORE IS ON'));
   assert.ok(on.includes('{{<NAME>}}'));
+  // Must tell the model the user SEES the real value, so it answers directly
+  // instead of hedging ("it's redacted / I don't have it").
+  assert.ok(on.includes('receives the REAL value'));
+  assert.ok(/do not say it is redacted/i.test(on));
 });
 
 test('injects into a string system prompt (Anthropic shape)', () => {

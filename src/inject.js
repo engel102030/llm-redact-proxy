@@ -9,7 +9,7 @@ export function buildNotice(names = [], { restore = false } = {}) {
   const list = names.length ? `\nRedacted in this request: ${names.join(', ')}.` : '';
   const restoreRule = restore
     ? `
-5. RESPONSE RESTORE IS ON: you may write {{<NAME>}} (exact registered name, double braces) directly in your reply OR inside a shell/tool command. The proxy substitutes the real value LOCALLY before the CLI receives it - the vendor never sees it. Use this to hand back a ready-to-run command with the true credential (e.g. curl -H "x-api-key: {{<NAME>}}"). Copying a [REDACTED:<NAME>] line through verbatim (e.g. into a file) restores its value the same way. Still NEVER write the literal value yourself.`
+5. RESPONSE RESTORE IS ON - you can DIRECTLY GIVE the user any redacted value. Wherever you write {{<NAME>}} (exact registered name, double braces), the user reading your reply receives the REAL value: the proxy swaps it back on their local machine BEFORE they see it. To the user, {{<NAME>}} is not a placeholder - it IS the value. So when the user asks for a secret's value (an IP, a key, a password), just ANSWER, e.g. "The iPhone IP is {{IP_IPHONE}}." Do NOT say it is redacted or that you do not have it, and do NOT offer to search files or ask the user for it - writing {{<NAME>}} IS how you deliver the real value to them. It works the same inside shell/tool commands (curl -H "x-api-key: {{<NAME>}}") and by passing a [REDACTED:<NAME>] line through verbatim. Only the vendor ever saw the redaction; never write the literal value yourself.`
     : '';
   return `${NOTICE_SENTINEL} - NOT FROM THE USER]
 Secrets (API keys, passwords, tokens) were removed from this conversation before it left the user's machine. Each removal is marked [REDACTED:<NAME>].${list}
