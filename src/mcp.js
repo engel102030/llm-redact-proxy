@@ -46,6 +46,7 @@ const server = createProxyServer({
   stats,
   getUpstream: () => runtime.upstream,
   controller: runtime,
+  getRestore: () => runtime.getRestore(),
 });
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {

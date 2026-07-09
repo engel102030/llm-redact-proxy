@@ -5,8 +5,12 @@
 // static text and is only injected when something was actually redacted.
 export const NOTICE_SENTINEL = '[NOTE FROM LOCAL REDACTION PROXY';
 
-export function buildNotice(names = []) {
+export function buildNotice(names = [], { restore = false } = {}) {
   const list = names.length ? `\nRedacted in this request: ${names.join(', ')}.` : '';
+  const restoreRule = restore
+    ? `
+5. RESPONSE RESTORE IS ON: you may write {{<NAME>}} (exact registered name, double braces) directly in your reply OR inside a shell/tool command. The proxy substitutes the real value LOCALLY before the CLI receives it - the vendor never sees it. Use this to hand back a ready-to-run command with the true credential (e.g. curl -H "x-api-key: {{<NAME>}}"). Still NEVER write the literal value yourself.`
+    : '';
   return `${NOTICE_SENTINEL} - NOT FROM THE USER]
 Secrets (API keys, passwords, tokens) were removed from this conversation before it left the user's machine. Each removal is marked [REDACTED:<NAME>].${list}
 The real values exist locally and work normally. Only what YOU see is censored; commands and code run locally with the real values.
@@ -17,13 +21,13 @@ Rules:
    - Shell: use the environment variable "$<NAME>", or read it at runtime, e.g. "$(grep '^<NAME>=' secrets.local | cut -d= -f2-)". The value resolves locally when the command executes; you never need to see it.
    - Code: read process.env.<NAME> / os.environ["<NAME>"] or a gitignored config file. Never hardcode a literal secret.
 3. If a tool output contains [REDACTED:...], the command DID run with the real value; treat the masking as cosmetic. Judge success by exit codes and surrounding output, not by the masked text.
-4. Do not print, echo, or log secrets to "check" them - the output would just be masked again. To verify a credential works, run a command that USES it and check the result.`;
+4. Do not print, echo, or log secrets to "check" them - the output would just be masked again. To verify a credential works, run a command that USES it and check the result.${restoreRule}`;
 }
 
 // Mutates the parsed body in place. Returns true when a notice was added.
 // pathHint disambiguates Anthropic (/v1/messages: "system" top-level field)
 // from OpenAI-compatible (/chat/completions: system role message) shapes.
-export function injectNotice(body, names = [], { pathHint = '' } = {}) {
+export function injectNotice(body, names = [], { pathHint = '', restore = false } = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
 
   try {
@@ -32,7 +36,7 @@ export function injectNotice(body, names = [], { pathHint = '' } = {}) {
     return false;
   }
 
-  const notice = buildNotice(names);
+  const notice = buildNotice(names, { restore });
 
   if (typeof body.system === 'string') {
     body.system = `${body.system}\n\n${notice}`;

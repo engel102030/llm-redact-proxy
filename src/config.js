@@ -133,5 +133,7 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
     redactModeFloor: floor,
     redactDisable: splitList(get('REDACT_DISABLE')),
     redactIgnore: splitList(get('REDACT_IGNORE')),
+    // OPT-IN: restore {{NAME}} placeholders to real values in the response.
+    restoreMarkers: get('RESTORE_MARKERS') === 'true',
   };
 }

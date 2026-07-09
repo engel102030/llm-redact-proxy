@@ -7,10 +7,12 @@
 import http from 'node:http';
 import https from 'node:https';
 import zlib from 'node:zlib';
+import { StringDecoder } from 'node:string_decoder';
 import { injectNotice } from './inject.js';
 import { handleDashboard } from './dashboard.js';
 import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-auth.js';
 import { buildModelsResponse } from './models.js';
+import { createSseRehydrator, rehydrateJsonBody } from './rehydrate.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // generous: SSE streams run long
@@ -77,8 +79,11 @@ function blockRequest(res, reason) {
   );
 }
 
-export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth }) {
+export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth, getRestore }) {
   const oauthOf = getOAuth ?? (() => readClaudeOAuth());
+  // Response rehydration state, resolved per request so the dashboard toggle
+  // takes effect live. Default off (no getter) - back-compat for tests.
+  const restoreOf = getRestore ?? (() => ({ enabled: false, map: new Map() }));
   // Upstream is resolved per request so the dashboard can switch providers
   // live. Falls back to the frozen config when no getter is supplied (the
   // standalone/back-compat path used by tests).
@@ -154,7 +159,7 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
           try {
             const parsed = JSON.parse(finalBody);
             const names = events.map((e) => e.rule);
-            if (injectNotice(parsed, names, { pathHint: req.url ?? '' })) {
+            if (injectNotice(parsed, names, { pathHint: req.url ?? '', restore: restoreOf().enabled })) {
               finalBody = JSON.stringify(parsed);
             }
           } catch {
@@ -299,12 +304,9 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
           return;
         }
 
-        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
-
-        // Tap the response ONLY to read token-usage numbers and byte count for
-        // the dashboard - the body is never stored or logged. A small carry
-        // handles a usage number split across chunk boundaries. Adding a data
-        // listener alongside pipe() keeps the stream unbuffered.
+        // Shared counters: token usage + byte count for the dashboard. A small
+        // carry handles a usage number split across chunk boundaries. The body
+        // is never stored or logged.
         let respBytes = 0;
         let inTok = null;
         let outTok = null;
@@ -333,17 +335,98 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             respBytes,
           });
         };
-        // Token usage lives in the (often compressed) response body. Decompress
-        // a COPY of the stream only to read the numbers - the client still
-        // receives the original bytes untouched via pipe().
+
         const respEnc = String(upstreamRes.headers['content-encoding'] ?? '').toLowerCase();
-        let sniff = null;
-        if (respEnc === 'gzip' || respEnc === 'x-gzip') sniff = zlib.createGunzip();
-        else if (respEnc === 'deflate') sniff = zlib.createInflate();
-        else if (respEnc === 'br') sniff = zlib.createBrotliDecompress();
-        else if (respEnc === 'zstd' && typeof zlib.createZstdDecompress === 'function') {
-          sniff = zlib.createZstdDecompress();
+        const makeDecompressor = () => {
+          if (respEnc === 'gzip' || respEnc === 'x-gzip') return zlib.createGunzip();
+          if (respEnc === 'deflate') return zlib.createInflate();
+          if (respEnc === 'br') return zlib.createBrotliDecompress();
+          if (respEnc === 'zstd' && typeof zlib.createZstdDecompress === 'function') return zlib.createZstdDecompress();
+          return null;
+        };
+
+        const respCt = String(upstreamRes.headers['content-type'] ?? '').toLowerCase();
+        const restore = restoreOf();
+        const doRestore =
+          restore.enabled &&
+          (upstreamRes.statusCode ?? 0) === 200 &&
+          (respCt.includes('event-stream') || respCt.includes('json'));
+
+        if (doRestore) {
+          // INVERSE of redaction: substitute {{NAME}} back to the real value on
+          // the way to the CLI, so a command the model emits runs locally with the
+          // true credential (the vendor only ever saw the redacted request). The
+          // body must be decoded, transformed, and sent uncompressed (its length
+          // changes) - drop the encoding/length headers. SSE stays streamed.
+          const h = { ...responseHeaders };
+          delete h['content-encoding'];
+          delete h['content-length'];
+          res.writeHead(upstreamRes.statusCode ?? 502, h);
+
+          const decoder = new StringDecoder('utf8');
+          const isSse = respCt.includes('event-stream');
+          const sse = isSse ? createSseRehydrator(restore.map) : null;
+          let jsonBuf = '';
+          let ended = false;
+          const endRes = () => {
+            if (ended) return;
+            ended = true;
+            res.end();
+            finishStats();
+          };
+          const onText = (text) => {
+            if (!text) return;
+            scan(text);
+            if (isSse) {
+              const out = sse.push(text);
+              if (out) res.write(out);
+            } else {
+              jsonBuf += text; // small non-stream body: buffer, rehydrate whole
+            }
+          };
+          const onEnd = () => {
+            if (ended) return;
+            if (isSse) {
+              const tail = sse.flush();
+              if (tail) res.write(tail);
+            } else {
+              res.write(rehydrateJsonBody(jsonBuf, restore.map));
+            }
+            endRes();
+          };
+
+          const dec = makeDecompressor();
+          if (dec) {
+            dec.on('data', (d) => onText(decoder.write(d)));
+            dec.on('end', () => {
+              onText(decoder.end());
+              onEnd();
+            });
+            dec.on('error', endRes); // bad decode: end with whatever we have
+            upstreamRes.on('data', (chunk) => {
+              respBytes += chunk.length;
+              dec.write(chunk);
+            });
+            upstreamRes.on('end', () => dec.end());
+            upstreamRes.on('error', endRes);
+          } else {
+            upstreamRes.on('data', (chunk) => {
+              respBytes += chunk.length;
+              onText(decoder.write(chunk));
+            });
+            upstreamRes.on('end', () => {
+              onText(decoder.end());
+              onEnd();
+            });
+            upstreamRes.on('error', endRes);
+          }
+          return;
         }
+
+        // Passthrough (rehydration off): forward original bytes; tap a
+        // decompressed COPY only to read the token numbers.
+        res.writeHead(upstreamRes.statusCode ?? 502, responseHeaders);
+        const sniff = makeDecompressor();
         if (sniff) {
           sniff.on('data', (d) => scan(d.toString('utf8')));
           sniff.on('end', finishStats);

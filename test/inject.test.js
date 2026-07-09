@@ -13,6 +13,14 @@ test('buildNotice names the redacted secrets and carries the sentinel', () => {
   assert.ok(notice.toLowerCase().includes('environment variable'));
 });
 
+test('buildNotice adds the {{NAME}} restore rule only when restore is on', () => {
+  const off = buildNotice(['DB_PASSWORD']);
+  assert.ok(!off.includes('RESPONSE RESTORE IS ON'));
+  const on = buildNotice(['DB_PASSWORD'], { restore: true });
+  assert.ok(on.includes('RESPONSE RESTORE IS ON'));
+  assert.ok(on.includes('{{<NAME>}}'));
+});
+
 test('injects into a string system prompt (Anthropic shape)', () => {
   const body = { system: 'You are a coding agent.', messages: [] };
   const changed = injectNotice(body, ['DB_PASSWORD']);

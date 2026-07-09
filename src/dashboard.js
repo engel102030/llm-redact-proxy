@@ -30,7 +30,7 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
         try {
           const parsed = JSON.parse(body || '{}');
           const patch = {};
-          for (const k of ['upstreamUrl', 'upstreamAuth', 'upstreamKey', 'redactMode']) {
+          for (const k of ['upstreamUrl', 'upstreamAuth', 'upstreamKey', 'redactMode', 'restoreMarkers']) {
             if (k in parsed) patch[k] = parsed[k];
           }
           controller.apply(patch);
@@ -122,6 +122,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
       <input id="c_key" type="password" placeholder="leave blank to keep current"></div>
     <div class="f"><label>redaction mode</label>
       <select id="c_mode"></select></div>
+    <div class="f"><label><input id="c_restore" type="checkbox" style="width:auto;margin-right:.4rem">restore {{NAME}} in responses</label>
+      <div class="mut" style="font-size:.8rem">off = safest. On: the model can write {{SECRET_NAME}} and the proxy substitutes the real value back locally (re-hydrates it into this machine's transcript). Named secrets only.</div></div>
   </div>
   <div class="actions">
     <button id="c_save">save &amp; apply</button>
@@ -159,11 +161,12 @@ async function loadCfg(){
     const modes=c.modes||['named-only','balanced','strict'];
     $('c_mode').innerHTML=modes.map(m=>'<option value="'+m+'"'+(m===c.redactMode?' selected':'')+'>'+m
       +(m===c.redactModeFloor?' (floor)':'')+'</option>').join('');
+    $('c_restore').checked=!!c.restoreMarkers;
     cfgLoaded=true;
   }catch(e){$('cfgmsg').textContent='could not load config';}
 }
 async function saveCfg(){
-  const patch={upstreamUrl:$('c_url').value.trim(),upstreamAuth:$('c_auth').value,redactMode:$('c_mode').value};
+  const patch={upstreamUrl:$('c_url').value.trim(),upstreamAuth:$('c_auth').value,redactMode:$('c_mode').value,restoreMarkers:$('c_restore').checked};
   if($('c_key').value)patch.upstreamKey=$('c_key').value;
   $('cfgmsg').textContent='saving...';$('cfgmsg').className='mut';
   try{

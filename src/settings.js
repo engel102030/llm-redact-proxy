@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const ALLOWED = ['upstreamUrl', 'upstreamAuth', 'upstreamKey', 'redactMode'];
+const ALLOWED = ['upstreamUrl', 'upstreamAuth', 'upstreamKey', 'redactMode', 'restoreMarkers'];
 
 function pickAllowed(obj) {
   const out = {};

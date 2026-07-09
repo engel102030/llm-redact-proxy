@@ -4,10 +4,16 @@
 import { createRedactor, MODES, MODE_RANK } from './redact.js';
 import { loadSettings, saveSettings } from './settings.js';
 import { isAnthropicHost } from './claude-auth.js';
+import { buildMarkerMap } from './rehydrate.js';
 
 export function createRuntime({ config, secrets = [] }) {
   let mode = config.redactMode;
   let currentSecrets = secrets;
+  // OPT-IN response rehydration: substitute {{NAME}} back to the real value on
+  // the way out to the CLI. Off unless explicitly enabled (re-hydrates a secret
+  // into the local transcript). See src/rehydrate.js.
+  let restoreMarkers = config.restoreMarkers ?? false;
+  let markerMap = buildMarkerMap(currentSecrets);
 
   // Mutated in place so the proxy, reading runtime.upstream each request, sees
   // provider changes immediately.
@@ -54,6 +60,9 @@ export function createRuntime({ config, secrets = [] }) {
       mode = patch.redactMode;
       holder.current = build();
     }
+    if (patch.restoreMarkers !== undefined) {
+      restoreMarkers = patch.restoreMarkers === true || patch.restoreMarkers === 'true';
+    }
     if (upstream.auth === 'replace' && !upstream.key) {
       throw new Error('upstreamAuth=replace requires a key');
     }
@@ -72,6 +81,7 @@ export function createRuntime({ config, secrets = [] }) {
       upstreamAuth: upstream.auth,
       upstreamKey: upstream.key ?? null,
       redactMode: mode,
+      restoreMarkers,
     };
   }
 
@@ -85,12 +95,20 @@ export function createRuntime({ config, secrets = [] }) {
       redactMode: mode,
       redactModeFloor: config.redactModeFloor,
       modes: MODES,
+      restoreMarkers,
     };
   }
 
   function setSecrets(next) {
     currentSecrets = next;
     holder.current = build();
+    markerMap = buildMarkerMap(currentSecrets);
+  }
+
+  // What the proxy needs to rehydrate responses: whether it is on, and the live
+  // name -> value map. Returns an empty map when off so callers can gate cheaply.
+  function getRestore() {
+    return { enabled: restoreMarkers && markerMap.size > 0, map: markerMap };
   }
 
   // Apply persisted settings over env defaults (do not re-persist).
@@ -114,5 +132,9 @@ export function createRuntime({ config, secrets = [] }) {
     snapshot,
     publicSettings,
     setSecrets,
+    getRestore,
+    get restoreMarkers() {
+      return restoreMarkers;
+    },
   };
 }

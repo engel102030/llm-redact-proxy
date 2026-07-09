@@ -154,6 +154,21 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 | `REDACT_MODE_FLOOR` | `named-only` | Hard minimum for the runtime `redact_mode` tool. |
 | `REDACT_DISABLE` | — | Comma-separated rule names to turn off (e.g. `high-entropy-hex,jwt`). |
 | `REDACT_IGNORE` | — | Comma-separated known-safe values or `/regex/` patterns — never redacted. |
+| `RESTORE_MARKERS` | `false` | **Opt-in.** Restore `{{NAME}}` placeholders in the response to the real value (see below). Toggle live in the dashboard. |
+
+### Response restore (`{{NAME}}`) — opt-in
+
+The inverse of redaction. With `RESTORE_MARKERS` on, when the model writes
+`{{NAME}}` (a registered secret name) anywhere in its reply — plain text or
+inside a tool command like `curl -H "x-api-key: {{NAME}}"` — the proxy
+substitutes the **real value back in locally**, streaming, before the CLI sees
+it. So a command runs with the true credential while the outgoing request still
+only ever carried `[REDACTED:NAME]`.
+
+It is **off by default**: restoring re-hydrates a secret into this machine's
+on-disk transcript and screen, so you opt in per provider. Only registered
+(named) secrets are restorable; `[REDACTED:NAME]` markers are never restored.
+When on, the system-prompt notice teaches the model to use `{{NAME}}`.
 
 ## Dashboard
 

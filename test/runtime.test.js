@@ -38,6 +38,29 @@ test('apply sets the provider live and persists it', () => {
   assert.equal(persisted.upstreamUrl, 'https://prov.example/anthropic');
 });
 
+test('restoreMarkers is off by default, toggles live, persists, and gates on secrets', () => {
+  const config = baseConfig();
+  const rt = createRuntime({ config, secrets: [{ name: 'K', value: 'the-value-123456' }] });
+  // default off
+  assert.equal(rt.restoreMarkers, false);
+  assert.equal(rt.getRestore().enabled, false);
+  // turn on
+  rt.apply({ restoreMarkers: true });
+  assert.equal(rt.restoreMarkers, true);
+  const r = rt.getRestore();
+  assert.equal(r.enabled, true);
+  assert.equal(r.map.get('K'), 'the-value-123456');
+  assert.equal(loadSettings(config.configFile).restoreMarkers, true);
+  assert.equal(rt.publicSettings().restoreMarkers, true);
+});
+
+test('restoreMarkers on but no secrets registered stays disabled (nothing to restore)', () => {
+  const rt = createRuntime({ config: baseConfig(), secrets: [] });
+  rt.apply({ restoreMarkers: true }, { persist: false });
+  assert.equal(rt.restoreMarkers, true);
+  assert.equal(rt.getRestore().enabled, false, 'no map -> effectively off');
+});
+
 test('persisted settings are loaded on boot over env defaults', () => {
   const config = baseConfig();
   createRuntime({ config, secrets: [] }).apply({ upstreamUrl: 'https://saved.example/v1' });

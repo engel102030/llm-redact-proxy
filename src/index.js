@@ -19,6 +19,7 @@ const server = createProxyServer({
   stats,
   getUpstream: () => runtime.upstream,
   controller: runtime,
+  getRestore: () => runtime.getRestore(),
 });
 
 server.listen(config.listenPort, config.listenHost, () => {
