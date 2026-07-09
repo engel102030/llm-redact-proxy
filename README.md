@@ -107,9 +107,13 @@ Requirements: **Node.js >= 22**. No `npm install` — there are no dependencies.
 ```bash
 git clone <this-repo> llm-redact-proxy
 cd llm-redact-proxy
-cp .env.example .env                      # set UPSTREAM_URL etc.
-cp secrets.local.example secrets.local    # put your REAL values here (gitignored)
+cp .env.example .env    # set UPSTREAM_URL etc.
 ```
+
+Secrets live in a **global** store (`~/.config/llm-redact-proxy/secrets.local`,
+chmod 600) shared by every project — register them with the `secret_add` tool,
+or create the file by hand. Set `SECRETS_FILE` to opt into a project-local
+store instead.
 
 ### Option 1 — MCP mode (auto-start with Claude Code)
 
@@ -142,7 +146,7 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8788
 | --- | --- | --- |
 | `LISTEN_ADDR` | `127.0.0.1:8788` | Where the proxy listens. Loopback only — anything else is refused. |
 | `UPSTREAM_URL` | — | The vendor endpoint redacted requests are forwarded to. |
-| `SECRETS_FILE` | `./secrets.local` | `NAME=VALUE` per line. Gitignored. Hot-reloaded on change. |
+| `SECRETS_FILE` | `~/.config/llm-redact-proxy/secrets.local` (honors `XDG_CONFIG_HOME`) | `NAME=VALUE` per line, chmod 600, hot-reloaded. **Global by default** — one store shared by every project, so a secret registered once is redacted everywhere. Set this to opt into a project-local store. |
 | `UPSTREAM_AUTH` | `passthrough` | `passthrough` forwards the CLI's auth header; `replace` swaps in `UPSTREAM_KEY`. |
 | `FAIL_CLOSED` | `true` | On redaction error: block (true) or forward raw with a loud warning (false — not recommended). |
 | `INJECT_NOTICE` | `true` | Append the redaction notice to the system prompt when something was redacted. |

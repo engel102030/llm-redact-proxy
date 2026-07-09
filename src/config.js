@@ -1,18 +1,28 @@
 // Config loader: real environment variables win over a local .env file,
 // which wins over defaults. Zero dependencies.
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { MODES, MODE_RANK } from './redact.js';
 
 const DEFAULTS = {
   LISTEN_ADDR: '127.0.0.1:8788',
-  SECRETS_FILE: './secrets.local',
   UPSTREAM_AUTH: 'passthrough',
   FAIL_CLOSED: 'true',
   INJECT_NOTICE: 'true',
   REDACT_MODE: 'strict',
   REDACT_MODE_FLOOR: 'named-only',
 };
+
+// Secrets are GLOBAL by default: one store under the user's config dir shared by
+// every project, so a credential registered once is redacted everywhere. A
+// project can still opt into a local store by setting SECRETS_FILE. Honors
+// XDG_CONFIG_HOME; falls back to ~/.config.
+function defaultSecretsFile(env) {
+  const configHome =
+    (env.XDG_CONFIG_HOME && env.XDG_CONFIG_HOME.trim()) || path.join(os.homedir(), '.config');
+  return path.join(configHome, 'llm-redact-proxy', 'secrets.local');
+}
 
 const splitList = (v) =>
   (v ?? '')
@@ -100,7 +110,8 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
   // The floor is a hard minimum; a starting mode below it is clamped up.
   const redactMode = MODE_RANK[requestedMode] < MODE_RANK[floor] ? floor : requestedMode;
 
-  const secretsFile = path.resolve(cwd, get('SECRETS_FILE'));
+  // Unset SECRETS_FILE -> the shared global store (not a project-local file).
+  const secretsFile = path.resolve(cwd, get('SECRETS_FILE') ?? defaultSecretsFile(env));
   // Dashboard-saved settings live next to the secrets file by default, so the
   // global install (SECRETS_FILE in ~/.config/...) also gets its config.json
   // there with no extra env var.

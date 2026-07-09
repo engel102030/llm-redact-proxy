@@ -20,6 +20,31 @@ test('defaults are applied', () => {
   assert.equal(cfg.upstreamUrl.origin, 'https://api.example.com');
 });
 
+test('secretsFile defaults to the GLOBAL store (not project-local), honoring XDG_CONFIG_HOME', () => {
+  // Unset SECRETS_FILE must resolve to the shared global store regardless of
+  // cwd, so a secret registered in one project is redacted in all of them.
+  const xdg = fs.mkdtempSync(path.join(os.tmpdir(), 'redact-xdg-'));
+  const cfg = loadConfig({ env: { ...BASE_ENV, XDG_CONFIG_HOME: xdg }, cwd: emptyDir });
+  assert.equal(cfg.secretsFile, path.join(xdg, 'llm-redact-proxy', 'secrets.local'));
+  // config.json lands next to it, still no project file.
+  assert.equal(cfg.configFile, path.join(xdg, 'llm-redact-proxy', 'config.json'));
+  // The global default is NEVER inside the project cwd.
+  assert.ok(!cfg.secretsFile.startsWith(emptyDir));
+});
+
+test('without XDG_CONFIG_HOME the global store falls back to ~/.config', () => {
+  const cfg = loadConfig({ env: { ...BASE_ENV }, cwd: emptyDir });
+  assert.equal(
+    cfg.secretsFile,
+    path.join(os.homedir(), '.config', 'llm-redact-proxy', 'secrets.local'),
+  );
+});
+
+test('SECRETS_FILE still opts into a project-local store', () => {
+  const cfg = loadConfig({ env: { ...BASE_ENV, SECRETS_FILE: './secrets.local' }, cwd: emptyDir });
+  assert.equal(cfg.secretsFile, path.join(emptyDir, 'secrets.local'));
+});
+
 test('missing UPSTREAM_URL throws', () => {
   assert.throws(() => loadConfig({ env: {}, cwd: emptyDir }), /UPSTREAM_URL/);
 });
