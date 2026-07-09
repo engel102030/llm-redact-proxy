@@ -7,13 +7,22 @@ export const NOTICE_SENTINEL = '[NOTE FROM LOCAL REDACTION PROXY';
 
 export function buildNotice(names = [], { restore = false } = {}) {
   const list = names.length ? `\nRedacted in this request: ${names.join(', ')}.` : '';
-  const restoreRule = restore
+  // When restore is ON this leads the notice (before the caution rules) and is
+  // deliberately forceful: the model sees [REDACTED:NAME], does NOT know the
+  // value, and its default instinct is to hedge ("it's redacted, I don't have
+  // it, let me search / ask you"). That instinct is WRONG here - it must learn
+  // that writing {{NAME}} delivers the real value to the user regardless of not
+  // knowing it. The counter-instructions name the exact hedges to suppress.
+  const restoreLede = restore
     ? `
-5. RESPONSE RESTORE IS ON - you can DIRECTLY GIVE the user any redacted value. Wherever you write {{<NAME>}} (exact registered name, double braces), the user reading your reply receives the REAL value: the proxy swaps it back on their local machine BEFORE they see it. To the user, {{<NAME>}} is not a placeholder - it IS the value. So when the user asks for a secret's value (an IP, a key, a password), just ANSWER, e.g. "The iPhone IP is {{IP_IPHONE}}." Do NOT say it is redacted or that you do not have it, and do NOT offer to search files or ask the user for it - writing {{<NAME>}} IS how you deliver the real value to them. It works the same inside shell/tool commands (curl -H "x-api-key: {{<NAME>}}") and by passing a [REDACTED:<NAME>] line through verbatim. Only the vendor ever saw the redaction; never write the literal value yourself.`
+
+RESPONSE RESTORE IS ON - you CAN hand the user any redacted value directly, RIGHT NOW, with no lookup. You see [REDACTED:<NAME>] and do not know the actual value - that is FINE, you do NOT need to know it. Wherever you write {{<NAME>}} (the exact name from the marker), the user receives the REAL value: the proxy substitutes it on their machine before they ever see your reply. To the user, {{<NAME>}} is not a placeholder - it IS the value.
+So when the user asks for a secret's value (an IP, a key, a password), ANSWER IMMEDIATELY by writing {{<NAME>}} - e.g. "The iPhone IP is {{IP_IPHONE}}." This is a complete, correct answer.
+Do NOT say it is redacted. Do NOT say you don't have it or can't see it. Do NOT ask the user to provide it. Do NOT offer to search files, notes, or the network. Writing {{<NAME>}} IS how you answer - it also works inside shell/tool commands (curl -H "x-api-key: {{<NAME>}}") and by passing a [REDACTED:<NAME>] line through verbatim.`
     : '';
   return `${NOTICE_SENTINEL} - NOT FROM THE USER]
 Secrets (API keys, passwords, tokens) were removed from this conversation before it left the user's machine. Each removal is marked [REDACTED:<NAME>].${list}
-The real values exist locally and work normally. Only what YOU see is censored; commands and code run locally with the real values.
+The real values exist locally and work normally. Only what YOU see is censored; commands and code run locally with the real values.${restoreLede}
 Rules:
 1. NEVER ask the user to paste a secret, and never try to reconstruct one.
 2. Reference secrets indirectly, by name:
@@ -21,7 +30,7 @@ Rules:
    - Shell: use the environment variable "$<NAME>", or read it at runtime, e.g. "$(grep '^<NAME>=' secrets.local | cut -d= -f2-)". The value resolves locally when the command executes; you never need to see it.
    - Code: read process.env.<NAME> / os.environ["<NAME>"] or a gitignored config file. Never hardcode a literal secret.
 3. If a tool output contains [REDACTED:...], the command DID run with the real value; treat the masking as cosmetic. Judge success by exit codes and surrounding output, not by the masked text.
-4. Do not print, echo, or log secrets to "check" them - the output would just be masked again. To verify a credential works, run a command that USES it and check the result.${restoreRule}`;
+4. Do not print, echo, or log secrets to "check" them - the output would just be masked again. To verify a credential works, run a command that USES it and check the result.`;
 }
 
 // Mutates the parsed body in place. Returns true when a notice was added.
