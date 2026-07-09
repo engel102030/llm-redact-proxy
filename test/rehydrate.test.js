@@ -42,6 +42,18 @@ test('field replacer leaves unknown names and stray braces untouched', () => {
   assert.equal(drip('{{UNKNOWN}} and {{ not a marker }} and { lone'), '{{UNKNOWN}} and {{ not a marker }} and { lone');
 });
 
+test('field replacer restores the [REDACTED:NAME] form too (char drip)', () => {
+  const text = 'saw [REDACTED:VIBECODE_API_KEY] and {{DB_PASSWORD}} here';
+  const expected = 'saw cap_exampleFAKEkey000000000000000000 and p@ss"w\\rd-123 here';
+  assert.equal(drip(text), expected);
+});
+
+test('field replacer does NOT restore Layer-B rule markers or unregistered names', () => {
+  // Rule names carry no value and (with hyphens) do not even match the name shape.
+  const text = '[REDACTED:jwt] [REDACTED:high-entropy-hex] [REDACTED:UNREGISTERED]';
+  assert.equal(drip(text), text);
+});
+
 test('field replacer escape mode JSON-escapes the value (for tool_use fragments)', () => {
   // Raw mode keeps the literal value; escape mode escapes quotes/backslashes.
   assert.equal(drip('{{DB_PASSWORD}}', { escape: false }), 'p@ss"w\\rd-123');
@@ -116,6 +128,15 @@ test('SSE: tool_use input_json_delta gets the value JSON-escaped so the assemble
   assert.ok(!assembled.includes('{{DB_PASSWORD}}'));
 });
 
+test('SSE: [REDACTED:NAME] echoed in a text_delta is restored; Layer-B marker is not', () => {
+  const input =
+    `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'echo [REDACTED:VIBECODE_API_KEY] but keep [REDACTED:jwt]' } })}\n\n`;
+  const out = collectSse([input]);
+  assert.ok(out.includes('cap_exampleFAKEkey000000000000000000'), 'registered name restored');
+  assert.ok(out.includes('[REDACTED:jwt]'), 'rule marker left intact');
+  assert.ok(!out.includes('[REDACTED:VIBECODE_API_KEY]'));
+});
+
 test('SSE: clean stream with no markers is passed through (parse-equivalent)', () => {
   const events = [
     `data: ${JSON.stringify({ type: 'message_start', message: { id: 'x' } })}\n\n`,
@@ -126,6 +147,14 @@ test('SSE: clean stream with no markers is passed through (parse-equivalent)', (
   const out = collectSse(events);
   assert.ok(out.includes('hello world'));
   assert.ok(out.includes('ping'));
+});
+
+test('rehydrateJsonBody restores the [REDACTED:NAME] form and keeps JSON valid', () => {
+  const body = JSON.stringify({ text: 'key [REDACTED:DB_PASSWORD] end' });
+  const out = rehydrateJsonBody(body, map());
+  const parsed = JSON.parse(out);
+  assert.equal(parsed.text, `key ${SECRETS[1].value} end`);
+  assert.ok(!out.includes('[REDACTED:DB_PASSWORD]'));
 });
 
 test('jsonEscapeInner produces splice-safe escaping', () => {

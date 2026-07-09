@@ -165,10 +165,15 @@ substitutes the **real value back in locally**, streaming, before the CLI sees
 it. So a command runs with the true credential while the outgoing request still
 only ever carried `[REDACTED:NAME]`.
 
+Both marker forms are restored, but **only for a registered secret name**:
+`{{NAME}}` (the model writes it intentionally) and `[REDACTED:NAME]` (the same
+marker it saw in its input, copied through verbatim). A `[REDACTED:NAME]` whose
+name is not a registered secret — Layer-B rule markers like `[REDACTED:jwt]` —
+has no value and is left untouched.
+
 It is **off by default**: restoring re-hydrates a secret into this machine's
-on-disk transcript and screen, so you opt in per provider. Only registered
-(named) secrets are restorable; `[REDACTED:NAME]` markers are never restored.
-When on, the system-prompt notice teaches the model to use `{{NAME}}`.
+on-disk transcript and screen, so you opt in per provider. When on, the
+system-prompt notice teaches the model to use `{{NAME}}`.
 
 ## Dashboard
 

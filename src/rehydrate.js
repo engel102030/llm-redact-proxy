@@ -1,18 +1,25 @@
-// Response rehydration (OPT-IN, default off). The INVERSE of redaction: when the
-// model writes a {{NAME}} placeholder in its reply, the proxy substitutes the
-// real secret VALUE back in before handing the response to the CLI - so a Bash
-// command the model emits runs with the true credential locally, and the vendor
-// never saw it (the request was redacted on the way out).
+// Response rehydration (OPT-IN, default off). The INVERSE of redaction: the proxy
+// substitutes the real secret VALUE back into the response before handing it to
+// the CLI - so a Bash command the model emits runs with the true credential
+// locally, and the vendor never saw it (the request was redacted on the way out).
 //
-// SECURITY: this re-hydrates a secret into the LOCAL transcript and screen. It is
-// off by default and only substitutes {{NAME}} for a REGISTERED secret name. It
-// does NOT restore [REDACTED:NAME] markers (that would leak values the model only
-// echoed). Layer-B rule markers have no value and are never restorable.
+// Two marker forms are restored, both ONLY for a REGISTERED secret NAME:
+//   - {{NAME}}        - the model writes this intentionally to request the value.
+//   - [REDACTED:NAME] - the same marker it saw in its input, echoed back; useful
+//                       when the model copies a redacted line verbatim.
+// A [REDACTED:NAME] whose NAME is not a registered secret (Layer-B rule markers
+// like [REDACTED:jwt] / [REDACTED:high-entropy-hex]) has no value and is left
+// untouched - the name regex also excludes the hyphens those rule names use.
+//
+// SECURITY: this re-hydrates a secret into the LOCAL transcript and screen. Off
+// by default; opt in per provider.
 //
 // Streaming-safe: a marker can arrive split across SSE deltas ("{{VIBE" then
 // "CODE_KEY}}"); the field replacer carries a bounded tail so it still matches.
 
-const MARKER_SOURCE = '\\{\\{([A-Za-z_][A-Za-z0-9_]*)\\}\\}';
+const NAME = '[A-Za-z_][A-Za-z0-9_]*';
+const MARKER_SOURCE = `\\{\\{(${NAME})\\}\\}|\\[REDACTED:(${NAME})\\]`;
+const RED_OPEN = '[REDACTED:';
 
 // Build a name -> value map from the registered secrets. Empty values are
 // skipped (nothing to restore to).
@@ -32,33 +39,56 @@ export function jsonEscapeInner(value) {
   return s.slice(1, -1);
 }
 
-// Replace every COMPLETE {{NAME}} for a known NAME. Unknown names are left as-is.
+// Replace every COMPLETE marker ({{NAME}} or [REDACTED:NAME]) for a known NAME.
+// Unknown names are left as-is.
 function replaceComplete(text, map, escape) {
-  return text.replace(new RegExp(MARKER_SOURCE, 'g'), (whole, name) => {
+  return text.replace(new RegExp(MARKER_SOURCE, 'g'), (whole, braceName, redName) => {
+    const name = braceName ?? redName;
     if (!map.has(name)) return whole;
     const value = map.get(name);
     return escape ? jsonEscapeInner(value) : value;
   });
 }
 
-// The most a still-incomplete marker tail can be: "{{" + longest name + "}}".
+// The most a still-incomplete marker tail can be: the longer of "{{"+name+"}}"
+// and "[REDACTED:"+name+"]".
 function maxMarkerLen(map) {
   let longest = 0;
   for (const name of map.keys()) if (name.length > longest) longest = name.length;
-  return longest + 4;
+  return longest + RED_OPEN.length + 1;
+}
+
+// The length of a trailing suffix of s that is a PROPER prefix of an open token
+// ("{{" or "[REDACTED:"), so it could still grow into a marker next chunk.
+function partialOpenTail(s) {
+  let hold = s.endsWith('{') ? 1 : 0; // prefix of "{{"
+  const max = Math.min(s.length, RED_OPEN.length - 1); // proper prefix only
+  for (let k = max; k >= 1; k -= 1) {
+    if (s.slice(-k) === RED_OPEN.slice(0, k)) {
+      if (k > hold) hold = k;
+      break;
+    }
+  }
+  return hold;
 }
 
 // Split text into [safe-to-emit, hold]. `hold` is a trailing fragment that could
-// still grow into a real marker on the next chunk, so it is kept back.
+// still grow into a real marker on the next chunk, so it is kept back. Handles
+// both marker forms: "{{...}}" and "[REDACTED:...]".
 function splitSafe(s, cap) {
-  const lastOpen = s.lastIndexOf('{{');
-  if (lastOpen !== -1 && s.indexOf('}}', lastOpen + 2) === -1) {
-    // A dangling "{{" with no closing "}}" yet. Hold it if it is still short
-    // enough to become a registered marker; otherwise it can never match.
-    if (s.length - lastOpen <= cap) return [s.slice(0, lastOpen), s.slice(lastOpen)];
+  // Earliest dangling open of either kind (an open with no matching close yet).
+  let danger = -1;
+  const ob = s.lastIndexOf('{{');
+  if (ob !== -1 && s.indexOf('}}', ob + 2) === -1) danger = ob;
+  const or = s.lastIndexOf(RED_OPEN);
+  if (or !== -1 && s.indexOf(']', or + RED_OPEN.length) === -1) {
+    if (danger === -1 || or < danger) danger = or;
   }
-  // A lone trailing "{" could become "{{" next chunk.
-  if (s.endsWith('{')) return [s.slice(0, -1), '{'];
+  if (danger !== -1 && s.length - danger <= cap) return [s.slice(0, danger), s.slice(danger)];
+
+  // No live dangling open (or too long to ever match): hold only a partial prefix.
+  const hold = partialOpenTail(s);
+  if (hold > 0) return [s.slice(0, s.length - hold), s.slice(s.length - hold)];
   return [s, ''];
 }
 
