@@ -190,12 +190,20 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
       headers[k] = value;
     }
     if (up.auth === 'replace') {
+      // Drop whatever credential the client sent and inject OUR key. Anthropic-
+      // compatible gateways disagree on which header carries the key: the native
+      // Anthropic scheme is x-api-key, but some gateways only read Authorization:
+      // Bearer. ALWAYS set x-api-key (the default the majority validate); a host
+      // like Overclock sends only Authorization, and mirroring that alone left
+      // x-api-key unset - a gateway that checks x-api-key then saw no key (401).
+      // Additionally set the Bearer form when the client used it, so Bearer-only
+      // gateways still authenticate. A gateway that reads x-api-key ignores the
+      // extra Bearer (verified against a live x-api-key-only gateway).
       const hadAuthorization = 'authorization' in headers;
-      const hadApiKey = 'x-api-key' in headers;
       delete headers.authorization;
       delete headers['x-api-key'];
+      headers['x-api-key'] = up.key;
       if (hadAuthorization) headers.authorization = `Bearer ${up.key}`;
-      if (hadApiKey || !hadAuthorization) headers['x-api-key'] = up.key;
     } else if (up.auth === 'oauth') {
       // Use the user's Claude subscription. Defence in depth: never send the
       // token anywhere but the official Anthropic API.
