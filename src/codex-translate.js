@@ -75,32 +75,58 @@ function imagePart(block) {
   throw new Error(`unsupported image source: ${String(src.type)}`);
 }
 
-// function_call_output.output is a string: text parts joined, an image inside
-// a tool result becomes a literal placeholder, is_error becomes a prefix.
-function toolResultText(block) {
+// function_call_output.output: a plain string when the result is text-only
+// (is_error becomes a prefix); a parts array when it carries images, which
+// the backend accepts as input_image parts (verified) - screenshots from
+// browser tools reach the model.
+function toolResultOutput(block) {
   const c = block.content;
-  let text = '';
+  const texts = []; // text runs, merged with newlines
+  const parts = []; // { kind: 'text' | 'image', value }
+  const pushText = (t) => {
+    const last = parts[parts.length - 1];
+    if (last && last.kind === 'text') last.value += `\n${t}`;
+    else parts.push({ kind: 'text', value: t });
+    texts.push(t);
+  };
   if (typeof c === 'string') {
-    text = c;
+    pushText(c);
   } else if (Array.isArray(c)) {
-    const parts = [];
     for (const part of c) {
       if (!isPlainObject(part)) throw new Error('tool_result content parts must be objects');
-      if (part.type === 'text' && typeof part.text === 'string') parts.push(part.text);
-      else if (part.type === 'image') parts.push('[image omitted]');
-      else if (part.type === 'document') parts.push('[document omitted]');
+      if (part.type === 'text' && typeof part.text === 'string') pushText(part.text);
+      else if (part.type === 'image') parts.push({ kind: 'image', value: imagePart(part) });
+      else if (part.type === 'document') pushText('[document omitted]');
       else if (part.type === 'tool_reference') {
         // Claude Code's ToolSearch result: the tool is already in tools[] on
         // this path (nothing is deferred), so the reference is informational.
         if (typeof part.tool_name !== 'string' || !part.tool_name) throw new Error('tool_reference has no tool_name');
-        parts.push(`[tool available: ${part.tool_name}]`);
+        pushText(`[tool available: ${part.tool_name}]`);
       } else throw new Error(`unsupported tool_result part: ${String(part.type)}`);
     }
-    text = parts.join('\n');
   } else if (c !== undefined && c !== null) {
     throw new Error('tool_result content must be a string or an array');
   }
-  return block.is_error === true ? `ERROR: ${text}` : text;
+  const prefix = block.is_error === true ? 'ERROR: ' : '';
+  if (!parts.some((p) => p.kind === 'image')) return prefix + texts.join('\n');
+  if (prefix) {
+    if (parts[0].kind === 'text') parts[0].value = prefix + parts[0].value;
+    else parts.unshift({ kind: 'text', value: prefix });
+  }
+  return parts.map((p) => (p.kind === 'text' ? { type: 'input_text', text: p.value } : p.value));
+}
+
+// A user-attached document: PDFs (and any base64 payload) become input_file
+// (verified against the backend), plain-text sources become text.
+function documentPart(block) {
+  const src = block.source;
+  if (!isPlainObject(src)) throw new Error('document block has no source');
+  if (src.type === 'text' && typeof src.data === 'string') return { type: 'input_text', text: src.data };
+  if (src.type === 'base64' && typeof src.media_type === 'string' && typeof src.data === 'string') {
+    const filename = typeof block.title === 'string' && block.title ? block.title : src.media_type === 'application/pdf' ? 'document.pdf' : 'document';
+    return { type: 'input_file', filename, file_data: `data:${src.media_type};base64,${src.data}` };
+  }
+  throw new Error(`unsupported document source: ${String(src.type)}`);
 }
 
 // Claude Code sends its own system prompt as a trailing messages[] entry with
@@ -131,10 +157,24 @@ function pushMessage(message, input) {
         if (role !== 'user') throw new Error('image blocks are only supported in user messages');
         parts.push(imagePart(block));
         break;
+      case 'document':
+        if (role !== 'user') throw new Error('document blocks are only supported in user messages');
+        parts.push(documentPart(block));
+        break;
+      case 'server_tool_use': {
+        // History from an Anthropic provider: the search the model ran there.
+        // On this path the hosted web_search tool leaves no such block, so a
+        // text note keeps the transcript coherent.
+        const query = isPlainObject(block.input) && typeof block.input.query === 'string' ? block.input.query : '';
+        parts.push({ type: role === 'assistant' ? 'output_text' : 'input_text', text: block.name === 'web_search' ? `[web search: ${query}]` : `[${String(block.name)}]` });
+        break;
+      }
+      case 'web_search_tool_result':
+        break; // the results were already digested into the assistant text
       case 'tool_result':
         if (typeof block.tool_use_id !== 'string' || !block.tool_use_id) throw new Error('tool_result has no tool_use_id');
         flush();
-        input.push({ type: 'function_call_output', call_id: block.tool_use_id, output: toolResultText(block) });
+        input.push({ type: 'function_call_output', call_id: block.tool_use_id, output: toolResultOutput(block) });
         break;
       case 'tool_use':
         if (typeof block.id !== 'string' || typeof block.name !== 'string') throw new Error('tool_use needs id and name');
@@ -164,17 +204,21 @@ function pushMessage(message, input) {
   flush();
 }
 
-// Only function tools (those with an input_schema) can run on the client.
-// Server-side tools (web_search_..., tool_search_...) carry a `type` and no
-// schema: nothing on the Codex side can run them, so they are dropped.
-// defer_loading is a Claude-only hint: every tool is sent.
+// Function tools (those with an input_schema) run on the client and are sent
+// as-is; defer_loading is a Claude-only hint, every tool is sent. Server-side
+// tools carry a `type` and no schema: Claude's web search maps to the Codex
+// hosted web_search tool (verified), every other server tool is dropped.
 function toolsToFunctions(tools) {
   if (tools === undefined || tools === null) return [];
   if (!Array.isArray(tools)) throw new Error('tools must be an array');
   const out = [];
+  let webSearch = false;
   for (const t of tools) {
     if (!isPlainObject(t)) throw new Error('tools entries must be objects');
-    if (!isPlainObject(t.input_schema)) continue;
+    if (!isPlainObject(t.input_schema)) {
+      if (typeof t.type === 'string' && t.type.startsWith('web_search')) webSearch = true;
+      continue;
+    }
     if (typeof t.name !== 'string' || !t.name) throw new Error('tool has no name');
     const fn = { type: 'function', name: t.name };
     if (typeof t.description === 'string') fn.description = t.description;
@@ -182,6 +226,7 @@ function toolsToFunctions(tools) {
     fn.strict = false;
     out.push(fn);
   }
+  if (webSearch) out.push({ type: 'web_search' });
   return out;
 }
 

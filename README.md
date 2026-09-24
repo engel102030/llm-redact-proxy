@@ -194,8 +194,10 @@ One provider per ChatGPT account; switch with **activate**. Redaction runs on
 the Anthropic body before translation, exactly as for every other provider,
 and the token only ever goes to chatgpt.com. Reasoning summaries come back as
 thinking blocks (the encrypted reasoning rides in the block signature so the
-next turn can continue it). `max_tokens`, `temperature` and friends are
-dropped: the backend has no equivalent. Using a subscription token outside
+next turn can continue it). Images in tool results (screenshots) and PDF
+attachments reach the model; Claude Code's WebSearch maps to the Codex hosted
+web search. `max_tokens`, `temperature` and friends are dropped: the backend
+has no equivalent. Using a subscription token outside
 the Codex CLI may violate OpenAI's terms — your call.
 
 ## Dashboard

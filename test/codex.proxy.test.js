@@ -149,10 +149,10 @@ test('fail closed: an untranslatable body is answered 400 and the upstream recei
   const upstream = await createMockUpstream({ sse: true, sseEvents: sseFrames(TEXT_TURN) });
   const proxy = await boot(upstream.url, fakeAdapter());
   try {
-    const res = await post(proxy.url, { model: 'gpt-5.5', messages: [{ role: 'user', content: [{ type: 'document', source: {} }] }] });
+    const res = await post(proxy.url, { model: 'gpt-5.5', messages: [{ role: 'user', content: [{ type: 'container_upload', file_id: 'f' }] }] });
     assert.equal(res.status, 400);
     const j = await res.json();
-    assert.match(j.error.message, /unsupported content block type: document/);
+    assert.match(j.error.message, /unsupported content block type: container_upload/);
     assert.equal(upstream.requests.length, 0);
   } finally {
     await proxy.close();

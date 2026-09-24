@@ -93,7 +93,7 @@ test('tool loop: tool_use -> function_call, tool_result -> function_call_output,
     { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'weather?' }] },
     { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'checking' }] },
     { type: 'function_call', call_id: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' },
-    { type: 'function_call_output', call_id: 'call_1', output: 'ERROR: 18C\n[image omitted]' },
+    { type: 'function_call_output', call_id: 'call_1', output: [{ type: 'input_text', text: 'ERROR: 18C' }, { type: 'input_image', image_url: 'data:image/png;base64,AA==' }] },
     { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'and now?' }] },
   ]);
 });
@@ -153,7 +153,7 @@ test('tools: function tools mapped, defer_loading ignored, server tools dropped,
     ...base,
     tools: [
       { name: 'Read', description: 'read a file', input_schema: { type: 'object' }, defer_loading: true },
-      { type: 'web_search_20250305', name: 'web_search' },
+      { type: 'tool_search_tool_regex_20251119', name: 'tool_search' },
       { type: 'custom', name: 'Grep', input_schema: { type: 'object', properties: {} } },
     ],
     tool_choice: { type: 'any', disable_parallel_tool_use: true },
@@ -208,8 +208,74 @@ test('tool-search artefacts: tool_reference parts become text, tool_addition blo
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'tool_reference' }] }] }] }), /tool_reference has no tool_name/);
 });
 
+test('tool_result images pass through as input_image parts (output becomes a parts array)', () => {
+  const out = anthropicToCodex({
+    ...base,
+    messages: [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: 'shot:' }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA==' } }] }] },
+    ],
+  });
+  assert.deepEqual(out.input, [
+    { type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_text', text: 'shot:' }, { type: 'input_image', image_url: 'data:image/png;base64,AA==' }] },
+  ]);
+  // text-only results stay a plain string (and is_error still prefixes)
+  const plain = anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c2', is_error: true, content: [{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }] }] }] });
+  assert.deepEqual(plain.input, [{ type: 'function_call_output', call_id: 'c2', output: 'ERROR: a\nb' }]);
+  // an error result with an image keeps the prefix on the text part
+  const errImg = anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c3', is_error: true, content: [{ type: 'image', source: { type: 'url', url: 'https://x/y.png' } }] }] }] });
+  assert.deepEqual(errImg.input[0].output, [{ type: 'input_text', text: 'ERROR: ' }, { type: 'input_image', image_url: 'https://x/y.png' }]);
+});
+
+test('document blocks become input_file (base64) or input_text (text source)', () => {
+  const out = anthropicToCodex({
+    ...base,
+    messages: [
+      { role: 'user', content: [
+        { type: 'text', text: 'read' },
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' }, title: 'spec.pdf' },
+        { type: 'document', source: { type: 'text', media_type: 'text/plain', data: 'hello doc' } },
+        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } },
+      ] },
+    ],
+  });
+  assert.deepEqual(out.input, [
+    { type: 'message', role: 'user', content: [
+      { type: 'input_text', text: 'read' },
+      { type: 'input_file', filename: 'spec.pdf', file_data: 'data:application/pdf;base64,JVBERi0=' },
+      { type: 'input_text', text: 'hello doc' },
+      { type: 'input_file', filename: 'document.pdf', file_data: 'data:application/pdf;base64,JVBERi0=' },
+    ] },
+  ]);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'url', url: 'https://x/a.pdf' } }] }] }), /unsupported document source: url/);
+});
+
+test('web search: the Anthropic server tool becomes the hosted web_search tool; search history blocks become placeholders', () => {
+  const out = anthropicToCodex({
+    ...base,
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }, { name: 'Read', input_schema: { type: 'object' } }],
+    messages: [
+      { role: 'user', content: 'latest node?' },
+      { role: 'assistant', content: [
+        { type: 'server_tool_use', id: 'srvtoolu_1', name: 'web_search', input: { query: 'latest node version' } },
+        { type: 'web_search_tool_result', tool_use_id: 'srvtoolu_1', content: [{ type: 'web_search_result', url: 'https://nodejs.org', title: 'Node' }] },
+        { type: 'text', text: 'Node 26.' },
+      ] },
+    ],
+  });
+  assert.deepEqual(out.tools, [
+    { type: 'function', name: 'Read', parameters: { type: 'object' }, strict: false },
+    { type: 'web_search' },
+  ]);
+  assert.deepEqual(out.input[1], { type: 'message', role: 'assistant', content: [
+    { type: 'output_text', text: '[web search: latest node version]' },
+    { type: 'output_text', text: 'Node 26.' },
+  ] });
+  // other server tools are still dropped
+  assert.deepEqual(anthropicToCodex({ ...base, tools: [{ type: 'tool_search_tool_regex_20251119', name: 'tool_search' }] }).tools, []);
+});
+
 test('unknown content block or malformed request throws (fail closed)', () => {
-  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'document', source: {} }] }] }), /unsupported content block type: document/);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'container_upload', file_id: 'f' }] }] }), /unsupported content block type: container_upload/);
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'function', content: 'x' }] }), /unsupported message role/);
   assert.throws(() => anthropicToCodex({ ...base, messages: 'nope' }), /messages must be an array/);
   assert.throws(() => anthropicToCodex({ messages: [] }), /model is required/);
