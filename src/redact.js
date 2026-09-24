@@ -161,7 +161,11 @@ function makeStringRedactor({ needles, regexRules, entropyRules, isIgnored }, ev
 // is Claude Code's device/account hash: an opaque, per-install constant that
 // contains no credential. Arrays do not extend the path, so this matches
 // regardless of message nesting.
-export const PROTECTED_PATHS = new Set(['metadata.user_id']);
+// messages.content.signature is a thinking block's signature: an opaque blob
+// the vendor issued and validates on replay (on the Codex path it carries the
+// encrypted reasoning). The entropy layer would otherwise shred it and every
+// follow-up turn would be rejected upstream. No user data ever lands there.
+export const PROTECTED_PATHS = new Set(['metadata.user_id', 'messages.content.signature']);
 
 function walkStrings(node, fn, protectedPaths = PROTECTED_PATHS, path = '') {
   if (typeof node === 'string') return protectedPaths.has(path) ? node : fn(node);
