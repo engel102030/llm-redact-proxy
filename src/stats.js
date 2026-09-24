@@ -17,6 +17,27 @@ export function createStats({ log = console.log } = {}) {
   const MAX_RECENT = 200;
   let seq = 0;
 
+  // Debug capture: the exact forwarded REQUEST (already redacted) and the raw
+  // upstream RESPONSE (before any {{NAME}} restore), stored in FULL for the last
+  // BODY_KEEP requests so the panel can show them on click. Neither holds a user
+  // secret - the request left redacted, the response is vendor output. Only the
+  // request count is bounded (last 30); bodies are kept complete. Served solely
+  // through the guarded /__redact/inspect endpoint.
+  const bodies = new Map(); // id -> { req, resp }
+  const BODY_KEEP = 30;
+  function rememberReq(id, text) {
+    if (id == null) return;
+    bodies.set(id, { req: String(text ?? ''), resp: '' });
+    while (bodies.size > BODY_KEEP) bodies.delete(bodies.keys().next().value);
+  }
+  function rememberResp(id, text) {
+    const b = bodies.get(id);
+    if (b) b.resp = String(text ?? '');
+  }
+  function getBodies(id) {
+    return bodies.get(Number(id)) ?? null;
+  }
+
   const safePath = (p) => String(p ?? '-').split('?')[0];
 
   // Opens a request record (called when the request is redacted/forwarded or
@@ -93,6 +114,17 @@ export function createStats({ log = console.log } = {}) {
     };
   }
 
+  // Clear all counters, the recent-request log, per-rule tallies and the kept
+  // bodies. Triggered from the dashboard "reset" button. Uptime/startedAt are
+  // left as the process boot time (not a counter).
+  function reset() {
+    for (const k of Object.keys(totals)) totals[k] = 0;
+    perRule.clear();
+    recent.length = 0;
+    bodies.clear();
+    seq = 0;
+  }
+
   // Guarded reveal: the actual matched values. Only served to the local panel
   // via the CSRF-guarded /__redact/values endpoint. Per-request captures plus a
   // per-rule set of distinct values (from the retained recent window).
@@ -111,5 +143,5 @@ export function createStats({ log = console.log } = {}) {
     };
   }
 
-  return { record, finish, toJSON, revealValues };
+  return { record, finish, toJSON, revealValues, rememberReq, rememberResp, getBodies, reset };
 }
