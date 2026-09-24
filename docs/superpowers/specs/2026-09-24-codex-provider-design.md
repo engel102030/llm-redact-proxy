@@ -141,7 +141,8 @@ runtime).
   `none`→`"none"`. Absent → omitted.
 - `output_config.effort` → `reasoning.effort` through `effortMap`, then
   clamped to the highest level the model supports (from `codex.models`;
-  unknown model → sent as mapped). Absent → `reasoning.effort` omitted.
+  unknown model → sent as mapped). Absent → the model's default level from the
+  fetched list, else `medium` (every Codex model supports it).
   `reasoning.summary` is always `"auto"`.
 - Fixed fields: `store:false`, `stream:true` (always; the client's `stream`
   only decides how the proxy answers), `include:["reasoning.encrypted_content"]`,
