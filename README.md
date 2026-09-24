@@ -176,6 +176,28 @@ It is **off by default**: restoring re-hydrates a secret into this machine's
 on-disk transcript and screen, so you opt in per provider. When on, the
 system-prompt notice teaches the model to use `{{NAME}}`.
 
+### Codex (ChatGPT subscription) provider — `codex-oauth`
+
+Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
+(Claude Code, Overclock) through the proxy:
+
+1. Dashboard → Providers → **+ New provider**: id `codex`, auth `codex-oauth`
+   (the URL can stay blank: it defaults to `https://chatgpt.com/backend-api/codex`). Save.
+2. **edit** the provider → **Login with ChatGPT**. A browser tab opens on
+   auth.openai.com; the proxy listens on `localhost:1455` for the callback (the
+   same port the Codex CLI uses). Tokens are stored in `providers.json` (chmod 600).
+3. **activate** it. `/v1/models` now lists the plan's models. `/effort` in Claude
+   Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
+   `providers.json` to change it).
+
+One provider per ChatGPT account; switch with **activate**. Redaction runs on
+the Anthropic body before translation, exactly as for every other provider,
+and the token only ever goes to chatgpt.com. Reasoning summaries come back as
+thinking blocks (the encrypted reasoning rides in the block signature so the
+next turn can continue it). `max_tokens`, `temperature` and friends are
+dropped: the backend has no equivalent. Using a subscription token outside
+the Codex CLI may violate OpenAI's terms — your call.
+
 ## Dashboard
 
 `http://127.0.0.1:8788/__redact/` — provider configuration, totals, per-rule

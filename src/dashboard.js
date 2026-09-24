@@ -138,6 +138,34 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
       }
     });
   }
+  // ---- Codex (ChatGPT subscription) login / logout ----
+  // login: starts the PKCE flow (callback listener on localhost:1455) and
+  // returns the authorize URL the panel opens in a new tab. The listener
+  // stores the tokens in the registry; the panel polls /__redact/providers.
+  if (path === '/__redact/providers/codex/login' && method === 'POST') {
+    if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+    if (!controller?.codexLogin) return json(404, { error: 'registry not available' });
+    return readJson((p) => {
+      controller
+        .codexLogin(p.id)
+        .then((r) => json(200, { ok: true, url: r.url, port: r.port }))
+        .catch((err) => {
+          const busy = err.code === 'EADDRINUSE' || err.code === 'LOGIN_IN_PROGRESS';
+          json(busy ? 409 : 400, { ok: false, error: busy ? `${err.message} (port 1455 busy or a login already open)` : err.message });
+        });
+    });
+  }
+  if (path === '/__redact/providers/codex/logout' && method === 'POST') {
+    if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+    if (!controller?.codexLogout) return json(404, { error: 'registry not available' });
+    return readJson((p) => {
+      try {
+        json(200, { ok: true, registry: controller.codexLogout(p.id) });
+      } catch (err) {
+        json(400, { ok: false, error: err.message });
+      }
+    });
+  }
   // Server-side fetch of a provider's real model list (uses its key + custom
   // headers, so it can clear a Cloudflare gate the browser cannot). Ids only.
   if (path === '/__redact/provider/models') {
@@ -353,6 +381,7 @@ tbody tr.rowclick{cursor:pointer}
           <option value="passthrough">passthrough &mdash; forward caller's token</option>
           <option value="replace">replace &mdash; inject the key below</option>
           <option value="oauth">oauth &mdash; my Claude subscription (official only)</option>
+          <option value="codex-oauth">codex-oauth &mdash; my ChatGPT login (chatgpt.com)</option>
           </select></div>
       <div class="f"><label class="lbl">Provider key <span class="faint">(only for replace)</span></label>
         <input id="c_key" type="password" placeholder="leave blank to keep current"></div>
@@ -394,8 +423,13 @@ tbody tr.rowclick{cursor:pointer}
         <div class="f"><label class="lbl">Label <span class="faint">(optional)</span></label><input id="p_label" placeholder="EuroModels"></div>
         <div class="f span2"><label class="lbl">Provider URL</label><input id="p_url" placeholder="https://euromodels.xyz/anthropic"></div>
         <div class="f"><label class="lbl">Auth</label>
-          <select id="p_auth"><option value="replace">replace &mdash; inject key</option><option value="passthrough">passthrough</option><option value="oauth">oauth (official only)</option></select></div>
+          <select id="p_auth"><option value="replace">replace &mdash; inject key</option><option value="passthrough">passthrough</option><option value="oauth">oauth (official only)</option><option value="codex-oauth">codex-oauth (ChatGPT login)</option></select></div>
         <div class="f"><label class="lbl">Key <span class="faint">(replace)</span></label><input id="p_key" type="password" placeholder="blank keeps current"></div>
+        <div class="f span2 hidec" id="codexbox"><label class="lbl">ChatGPT account</label>
+          <div class="caprow"><span id="codexstatus" class="faint">not logged in</span>
+            <button class="ghost" id="p_codexlogin" type="button" style="padding:6px 12px;font-size:12px">Login with ChatGPT</button>
+            <button class="linkbtn" id="p_codexlogout" type="button" style="color:var(--red)">logout</button></div>
+          <div class="hint">Save the provider first. Login opens auth.openai.com in a new tab; the proxy listens on localhost:1455 for the callback (the same port the Codex CLI uses). Tokens are stored in providers.json and never shown here. URL can stay blank (defaults to the Codex backend). Effort map (low/medium/high/max &rarr; Codex level) is edited in providers.json.</div></div>
         <div class="f span2"><label class="lbl">User-Agent header <span class="faint">(optional &mdash; clears Cloudflare gates)</span></label>
           <input id="p_ua" placeholder="Mozilla/5.0 (Macintosh&hellip;) Chrome/124.0 Safari/537.36"></div>
       </div>
@@ -610,7 +644,8 @@ function renderProviders(reg){
     const active=p.id===reg.active;
     h+='<tr><td><b>'+esc(p.id)+'</b>'+(active?' <span class="pill ok">active</span>':'')+(p.label?'<div class="faint mono">'+esc(p.label)+'</div>':'')+'</td>'
       +'<td class="mono faint">'+esc(trunc(p.url||'\\u2014',46))+'</td>'
-      +'<td>'+esc(p.auth)+(p.hasKey?' <span class="faint">\\u00b7 key</span>':'')+'</td>'
+      +'<td>'+esc(p.auth)+(p.hasKey?' <span class="faint">\\u00b7 key</span>':'')
+        +(p.codex&&p.codex.loggedIn?' <span class="faint">\\u00b7 '+esc(p.codex.email||'logged in')+'</span>':(p.codex?' <span class="warn">\\u00b7 not logged in</span>':''))+'</td>'
       +'<td class="num">'+Object.keys(p.aliases||{}).length+'</td>'
       +'<td style="white-space:nowrap;text-align:right">'
         +(active?'':'<button class="linkbtn" data-act="activate" data-id="'+esc(p.id)+'">activate</button> &nbsp;')
@@ -634,6 +669,11 @@ async function provPost(pathx,body){
     if(d.ok){$('provmsg').textContent='saved \\u2014 applied live';$('provmsg').className='ok';renderProviders(d.registry);loadCfg();tick();return true;}
     $('provmsg').textContent='error: '+(d.error||r.status);$('provmsg').className='err';return false;
   }catch(e){$('provmsg').textContent='failed: '+e;$('provmsg').className='err';return false;}
+}
+async function provJson(pathx,body){
+  const r=await fetch(pathx,{method:'POST',headers:{'content-type':'application/json','x-redact-panel':'1'},body:JSON.stringify(body)});
+  let d;try{d=await r.json();}catch(e){d={ok:false,error:'bad response '+r.status};}
+  if(!('ok' in d))d.ok=r.ok;return d;
 }
 function aliasRow(a,real){
   const div=document.createElement('div');div.className='caprow';div.style.margin='7px 0';
@@ -662,6 +702,7 @@ function openEditor(id){
   $('p_ua').value=(p&&p.headers)?(p.headers['user-agent']||''):'';
   renderAliases(p?p.aliases:{});
   $('modeldl').innerHTML='';$('fetchmsg').textContent='';$('provmsg').textContent='';
+  syncCodexBox();
   $('proveditor').classList.remove('hidec');
   $('proveditor').scrollIntoView({behavior:'smooth',block:'nearest'});
 }
@@ -679,6 +720,43 @@ $('p_fetch').onclick=async()=>{
     else if(r.status===404)$('fetchmsg').textContent='save this provider first, then fetch';
     else $('fetchmsg').textContent='fetch failed ('+(d.status||r.status)+'): '+esc(trunc(d.error||'',90));
   }catch(e){$('fetchmsg').textContent='fetch failed: '+e;}
+};
+// ---------- Codex (ChatGPT subscription) login ----------
+const sleep=(ms)=>new Promise(r=>setTimeout(r,ms));
+function codexStatusText(p){
+  const c=p&&p.codex;
+  if(!c||!c.loggedIn)return 'not logged in';
+  const until=c.expiresAt?new Date(c.expiresAt).toLocaleString():'?';
+  return (c.email||'logged in')+' \\u00b7 '+(c.plan||'?')+' \\u00b7 '+c.models.length+' models \\u00b7 token valid until '+until;
+}
+function syncCodexBox(){
+  const on=$('p_auth').value==='codex-oauth';
+  $('codexbox').classList.toggle('hidec',!on);
+  $('p_key').disabled=on;
+  const p=editingId?findProv(editingId):null;
+  $('codexstatus').textContent=codexStatusText(p);
+  $('codexstatus').className=(p&&p.codex&&p.codex.loggedIn)?'ok':'faint';
+}
+$('p_auth').addEventListener('change',syncCodexBox);
+$('p_codexlogin').onclick=async()=>{
+  const id=$('p_id').value.trim();
+  if(!id||!findProv(id)){$('provmsg').textContent='save this provider first, then log in';$('provmsg').className='err';return;}
+  $('provmsg').textContent='opening ChatGPT login\\u2026';$('provmsg').className='mut';
+  const d=await provJson('providers/codex/login',{id});
+  if(!d.ok){$('provmsg').textContent='login failed: '+(d.error||'?');$('provmsg').className='err';return;}
+  window.open(d.url,'_blank');
+  $('provmsg').textContent='waiting for the browser login\\u2026';
+  for(let i=0;i<150;i++){
+    await sleep(2000);
+    await loadProviders();
+    const p=findProv(id);
+    if(p&&p.codex&&p.codex.loggedIn){syncCodexBox();$('provmsg').textContent='logged in';$('provmsg').className='ok';loadCfg();return;}
+  }
+  $('provmsg').textContent='login timed out \\u2014 try again';$('provmsg').className='err';
+};
+$('p_codexlogout').onclick=async()=>{
+  const id=$('p_id').value.trim();if(!id)return;
+  if(await provPost('providers/codex/logout',{id}))syncCodexBox();
 };
 $('p_save').onclick=async()=>{
   const id=$('p_id').value.trim();
