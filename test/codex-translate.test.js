@@ -179,3 +179,141 @@ test('unknown content block or malformed request throws (fail closed)', () => {
   assert.throws(() => anthropicToCodex({ ...base, tool_choice: { type: 'tool' } }), /needs a name/);
   assert.throws(() => anthropicToCodex('not an object'), /JSON object/);
 });
+
+// ---------------------------------------------------------------------------
+// Response side: Responses SSE -> Anthropic SSE events
+// ---------------------------------------------------------------------------
+import { SseDecoder, CodexReducer, serializeSse, errorSse, accumulateMessage, estimateTokens } from '../src/codex-translate.js';
+import { TEXT_TURN, TOOL_TURN } from './helpers/codex-fixtures.js';
+
+function run(events) {
+  const r = new CodexReducer({ messageId: 'msg_1', model: 'gpt-5.6-sol' });
+  const out = [];
+  for (const e of events) out.push(...r.push(e));
+  return { out, r };
+}
+
+test('text turn: reasoning (empty summary) -> thinking block with signature, text block, end_turn + usage', () => {
+  const { out, r } = run(TEXT_TURN);
+  assert.deepEqual(
+    out.map((e) => e.event),
+    ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'content_block_start', 'content_block_delta', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop'],
+  );
+  assert.deepEqual(out[0].data.message, { id: 'msg_1', type: 'message', role: 'assistant', model: 'gpt-5.6-sol', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } });
+  assert.deepEqual(out[1].data, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } });
+  assert.deepEqual(out[2].data.delta, { type: 'signature_delta', signature: 'ENC1' });
+  assert.deepEqual(out[4].data, { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } });
+  assert.deepEqual(out[5].data.delta, { type: 'text_delta', text: 'Hi' });
+  assert.deepEqual(out[8].data, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 24, output_tokens: 18, cache_read_input_tokens: 5 } });
+  assert.equal(r.done, true);
+  assert.deepEqual(r.push({ type: 'response.output_text.delta', output_index: 9, delta: 'late' }), []); // after done: ignored
+});
+
+test('tool turn: function_call -> tool_use block with input_json deltas, stop_reason tool_use', () => {
+  const { out } = run(TOOL_TURN);
+  assert.deepEqual(out[1].data, { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_1', name: 'get_weather', input: {} } });
+  assert.deepEqual(out[2].data.delta, { type: 'input_json_delta', partial_json: '{"city":' });
+  assert.deepEqual(out[3].data.delta, { type: 'input_json_delta', partial_json: '"Paris"}' });
+  assert.equal(out[4].event, 'content_block_stop');
+  assert.equal(out[5].data.delta.stop_reason, 'tool_use');
+  assert.deepEqual(out[5].data.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0 });
+});
+
+test('function_call whose arguments never streamed: the final arguments become one delta', () => {
+  const { out } = run([
+    { type: 'response.created', response: {} },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'fc', type: 'function_call', call_id: 'c9', name: 'ls', arguments: '' } },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'fc', type: 'function_call', call_id: 'c9', name: 'ls', arguments: '{"path":"."}' } },
+    { type: 'response.completed', response: { usage: {} } },
+  ]);
+  assert.deepEqual(out[2].data.delta, { type: 'input_json_delta', partial_json: '{"path":"."}' });
+});
+
+test('reasoning summary deltas stream as thinking_delta; a second part gets a blank-line separator', () => {
+  const { out } = run([
+    { type: 'response.created', response: {} },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'rs', type: 'reasoning', summary: [] } },
+    { type: 'response.reasoning_summary_part.added', output_index: 0, summary_index: 0, part: { type: 'summary_text', text: '' } },
+    { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 0, delta: 'Think A' },
+    { type: 'response.reasoning_summary_part.done', output_index: 0, summary_index: 0 },
+    { type: 'response.reasoning_summary_part.added', output_index: 0, summary_index: 1, part: { type: 'summary_text', text: '' } },
+    { type: 'response.reasoning_summary_text.delta', output_index: 0, summary_index: 1, delta: 'Think B' },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'rs', type: 'reasoning', summary: [{ type: 'summary_text', text: 'Think A' }, { type: 'summary_text', text: 'Think B' }], encrypted_content: 'ENC' } },
+    { type: 'response.completed', response: { usage: {} } },
+  ]);
+  const thinking = out.filter((e) => e.data.delta?.type === 'thinking_delta').map((e) => e.data.delta.thinking).join('');
+  assert.equal(thinking, 'Think A\n\nThink B');
+  assert.equal(out.filter((e) => e.data.delta?.type === 'signature_delta').length, 1);
+});
+
+test('summary present only in the done item is emitted once', () => {
+  const { out } = run([
+    { type: 'response.created', response: {} },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'rs', type: 'reasoning', summary: [] } },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'rs', type: 'reasoning', summary: [{ type: 'summary_text', text: 'Only here' }], encrypted_content: 'E' } },
+    { type: 'response.completed', response: { usage: {} } },
+  ]);
+  const thinking = out.filter((e) => e.data.delta?.type === 'thinking_delta').map((e) => e.data.delta.thinking);
+  assert.deepEqual(thinking, ['Only here']);
+});
+
+test('out-of-order delta, duplicate created, wrong block kind, failed and error events throw', () => {
+  assert.throws(() => run([{ type: 'response.created' }, { type: 'response.output_text.delta', output_index: 3, delta: 'x' }]), /not open/);
+  assert.throws(() => run([{ type: 'response.created' }, { type: 'response.created' }]), /duplicate/);
+  assert.throws(() => run([{ type: 'response.output_text.delta', output_index: 0, delta: 'x' }]), /before response.created/);
+  assert.throws(
+    () => run([{ type: 'response.created' }, { type: 'response.output_item.added', output_index: 0, item: { type: 'message' } }, { type: 'response.reasoning_summary_text.delta', output_index: 0, delta: 'x' }]),
+    /for a text block/,
+  );
+  assert.throws(() => run([{ type: 'response.created' }, { type: 'response.failed', response: { error: { message: 'quota exhausted' } } }]), /quota exhausted/);
+  assert.throws(() => run([{ type: 'response.created' }, { type: 'error', message: 'boom' }]), /boom/);
+  assert.throws(() => run([{ nope: true }]), /no type/);
+});
+
+test('unknown item types and unknown events are ignored; incomplete -> max_tokens and open blocks are closed', () => {
+  const { out, r } = run([
+    { type: 'response.created', response: {} },
+    { type: 'response.output_item.added', output_index: 0, item: { id: 'ws', type: 'web_search_call' } },
+    { type: 'response.web_search_call.searching', output_index: 0 },
+    { type: 'response.output_item.done', output_index: 0, item: { id: 'ws', type: 'web_search_call' } },
+    { type: 'response.output_item.added', output_index: 1, item: { id: 'm', type: 'message', content: [] } },
+    { type: 'response.output_text.delta', output_index: 1, delta: 'partial' },
+    { type: 'response.incomplete', response: { usage: { input_tokens: 1, output_tokens: 2 } } },
+  ]);
+  assert.deepEqual(out.map((e) => e.event), ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop']);
+  assert.equal(out[1].data.index, 0); // the ignored item consumed no index
+  assert.equal(out[4].data.delta.stop_reason, 'max_tokens');
+  assert.equal(r.done, true);
+});
+
+test('SseDecoder: frames split across chunks, CRLF, [DONE], comments, a final frame without blank line, size cap', () => {
+  const d = new SseDecoder();
+  const text = ': keepalive\nevent: x\ndata: {"a":1}\n\ndata: {"b":\ndata: 2}\r\n\r\ndata: [DONE]\n\ndata: {"c":3}';
+  const all = [...d.push(Buffer.from(text.slice(0, 20))), ...d.push(Buffer.from(text.slice(20, 50))), ...d.push(text.slice(50)), ...d.flush()];
+  assert.deepEqual(all, [{ a: 1 }, { b: 2 }, { c: 3 }]);
+  assert.deepEqual(new SseDecoder().flush(), []);
+  assert.throws(() => new SseDecoder().push('data: not-json\n\n'), /not valid JSON/);
+  assert.throws(() => new SseDecoder().push(`data: {"x":"${'y'.repeat(1024 * 1024 + 16)}`), /size limit/);
+});
+
+test('serializeSse and errorSse produce Anthropic SSE frames', () => {
+  const s = serializeSse([{ event: 'message_stop', data: { type: 'message_stop' } }]);
+  assert.equal(s, 'event: message_stop\ndata: {"type":"message_stop"}\n\n');
+  assert.equal(errorSse('bad'), 'event: error\ndata: {"type":"error","error":{"type":"api_error","message":"bad"}}\n\n');
+});
+
+test('accumulateMessage folds a stream into one Messages-API body', () => {
+  const tool = accumulateMessage(run(TOOL_TURN).out);
+  assert.equal(tool.type, 'message');
+  assert.equal(tool.id, 'msg_1');
+  assert.equal(tool.stop_reason, 'tool_use');
+  assert.deepEqual(tool.content, [{ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'Paris' } }]);
+  assert.deepEqual(tool.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0 });
+  const text = accumulateMessage(run(TEXT_TURN).out);
+  assert.deepEqual(text.content, [{ type: 'thinking', thinking: '', signature: 'ENC1' }, { type: 'text', text: 'Hi.' }]);
+  assert.throws(() => accumulateMessage([]), /before message_start/);
+});
+
+test('estimateTokens is a deterministic bytes/4 estimate over what is sent', () => {
+  assert.equal(estimateTokens({ instructions: 'abcd', input: [], tools: [] }), Math.ceil((4 + 2 + 2) / 4));
+});
