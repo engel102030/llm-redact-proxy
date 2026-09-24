@@ -31,3 +31,17 @@ export const TOOL_TURN = [
   { type: 'response.output_item.done', output_index: 0, item: { id: 'fc_1', type: 'function_call', status: 'completed', call_id: 'call_1', name: 'get_weather', arguments: '{"city":"Paris"}' } },
   { type: 'response.completed', response: { id: 'resp_2', status: 'completed', output: [], usage: { input_tokens: 10, output_tokens: 6 } } },
 ];
+
+// Unsigned JWT-shaped tokens carrying the claims the real ones carry. Only
+// the payload is read by the code under test.
+const b64url = (s) => Buffer.from(s).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+export function fakeJwt(claims) {
+  return `${b64url('{"alg":"none","typ":"JWT"}')}.${b64url(JSON.stringify(claims))}.sig`;
+}
+// expSec 4102444800 = 2100-01-01T00:00:00Z
+export function fakeAccessToken({ accountId = 'acc-1', plan = 'plus', expSec = 4102444800 } = {}) {
+  return fakeJwt({ exp: expSec, 'https://api.openai.com/auth': { chatgpt_account_id: accountId, chatgpt_plan_type: plan } });
+}
+export function fakeIdToken({ email = 'me@example.com' } = {}) {
+  return fakeJwt({ 'https://api.openai.com/profile': { email } });
+}
