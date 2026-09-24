@@ -169,9 +169,27 @@ test('tools: function tools mapped, defer_loading ignored, server tools dropped,
   assert.equal(anthropicToCodex({ ...base, tool_choice: { type: 'any' } }).tool_choice, 'auto'); // no tools: required would be rejected
 });
 
+test('a system-role message (Claude Code sends its prompt this way for non-Claude models) becomes a developer item, order kept', () => {
+  const out = anthropicToCodex({
+    ...base,
+    messages: [
+      { role: 'user', content: 'hi' },
+      { role: 'system', content: [{ type: 'text', text: 'You are Claude Code.', cache_control: { type: 'ephemeral' } }, { type: 'text', text: 'Be brief.' }] },
+      { role: 'system', content: 'plain string' },
+    ],
+  });
+  assert.deepEqual(out.input, [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'You are Claude Code.' }, { type: 'input_text', text: 'Be brief.' }] },
+    { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'plain string' }] },
+  ]);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'system', content: [{ type: 'image', source: { type: 'url', url: 'x' } }] }] }), /only supported in user messages/);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'tool', content: 'x' }] }), /unsupported message role: tool/);
+});
+
 test('unknown content block or malformed request throws (fail closed)', () => {
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'document', source: {} }] }] }), /unsupported content block type: document/);
-  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'system', content: 'x' }] }), /unsupported message role/);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'function', content: 'x' }] }), /unsupported message role/);
   assert.throws(() => anthropicToCodex({ ...base, messages: 'nope' }), /messages must be an array/);
   assert.throws(() => anthropicToCodex({ messages: [] }), /model is required/);
   assert.throws(() => anthropicToCodex({ ...base, system: [{ type: 'image' }] }), /text blocks/);

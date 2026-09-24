@@ -97,10 +97,15 @@ function toolResultText(block) {
   return block.is_error === true ? `ERROR: ${text}` : text;
 }
 
+// Claude Code sends its own system prompt as a trailing messages[] entry with
+// role "system" when the model id is not a Claude model. The backend rejects
+// role "system" input items but accepts "developer", which means the same.
+const ROLE_MAP = { user: 'user', assistant: 'assistant', system: 'developer' };
+
 function pushMessage(message, input) {
   if (!isPlainObject(message)) throw new Error('messages entries must be objects');
-  const role = message.role;
-  if (role !== 'user' && role !== 'assistant') throw new Error(`unsupported message role: ${String(role)}`);
+  const role = ROLE_MAP[message.role];
+  if (!role) throw new Error(`unsupported message role: ${String(message.role)}`);
   const blocks = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content;
   if (!Array.isArray(blocks)) throw new Error('message content must be a string or an array of blocks');
   let parts = [];
