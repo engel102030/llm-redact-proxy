@@ -88,7 +88,13 @@ function toolResultText(block) {
       if (!isPlainObject(part)) throw new Error('tool_result content parts must be objects');
       if (part.type === 'text' && typeof part.text === 'string') parts.push(part.text);
       else if (part.type === 'image') parts.push('[image omitted]');
-      else throw new Error(`unsupported tool_result part: ${String(part.type)}`);
+      else if (part.type === 'document') parts.push('[document omitted]');
+      else if (part.type === 'tool_reference') {
+        // Claude Code's ToolSearch result: the tool is already in tools[] on
+        // this path (nothing is deferred), so the reference is informational.
+        if (typeof part.tool_name !== 'string' || !part.tool_name) throw new Error('tool_reference has no tool_name');
+        parts.push(`[tool available: ${part.tool_name}]`);
+      } else throw new Error(`unsupported tool_result part: ${String(part.type)}`);
     }
     text = parts.join('\n');
   } else if (c !== undefined && c !== null) {
@@ -146,6 +152,10 @@ function pushMessage(message, input) {
         break;
       }
       case 'redacted_thinking':
+        break;
+      case 'tool_addition':
+        // A system message Claude Code adds after a ToolSearch: the named tool
+        // is already in tools[] here, so there is nothing to add.
         break;
       default:
         throw new Error(`unsupported content block type: ${block.type}`);

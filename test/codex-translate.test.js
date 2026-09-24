@@ -187,6 +187,27 @@ test('a system-role message (Claude Code sends its prompt this way for non-Claud
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'tool', content: 'x' }] }), /unsupported message role: tool/);
 });
 
+test('tool-search artefacts: tool_reference parts become text, tool_addition blocks are dropped', () => {
+  // Claude Code's ToolSearch answers with tool_reference parts and then adds a
+  // system message with tool_addition blocks; every tool is already sent in
+  // tools[], so the reference is informational.
+  const out = anthropicToCodex({
+    ...base,
+    messages: [
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'text', text: 'found:' }, { type: 'tool_reference', tool_name: 'ArtifactData' }, { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'AA==' } }] }] },
+      { role: 'system', content: [{ type: 'text', text: 'tools added' }, { type: 'tool_addition', tool: { type: 'tool_reference', name: 'ArtifactData' } }] },
+      { role: 'system', content: [{ type: 'tool_addition', tool: { type: 'tool_reference', name: 'Bash' } }] },
+      { role: 'user', content: 'go' },
+    ],
+  });
+  assert.deepEqual(out.input, [
+    { type: 'function_call_output', call_id: 'c1', output: 'found:\n[tool available: ArtifactData]\n[document omitted]' },
+    { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'tools added' }] },
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'go' }] },
+  ]);
+  assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [{ type: 'tool_reference' }] }] }] }), /tool_reference has no tool_name/);
+});
+
 test('unknown content block or malformed request throws (fail closed)', () => {
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'document', source: {} }] }] }), /unsupported content block type: document/);
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'function', content: 'x' }] }), /unsupported message role/);
