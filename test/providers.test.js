@@ -17,7 +17,10 @@ import {
   publicRegistry,
   loadProviders,
   saveProviders,
+  setCodexAuth,
+  clearCodexAuth,
 } from '../src/providers.js';
+import { fakeAccessToken, fakeIdToken } from './helpers/codex-fixtures.js';
 
 test('normalizeProvider validates url and auth, lowercases header keys', () => {
   const p = normalizeProvider({
@@ -132,5 +135,83 @@ test('loadProviders returns null for a missing file and repairs a bad active poi
   fs.writeFileSync(file, JSON.stringify({ active: 'ghost', providers: { real: { url: 'https://a', auth: 'passthrough' } } }));
   const reg = loadProviders(file);
   assert.equal(reg.active, 'real'); // ghost -> first real provider
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// codex-oauth records (ChatGPT subscription login)
+// ---------------------------------------------------------------------------
+const LOGIN = {
+  tokens: { access: fakeAccessToken({ accountId: 'acc-1' }), refresh: 'R', idToken: fakeIdToken(), accountId: 'acc-1', expiresAt: 4102444800000 },
+  account: { email: 'me@example.com', plan: 'plus' },
+  models: [{ slug: 'gpt-5.5', displayName: 'GPT-5.5', visibility: 'list', defaultLevel: 'medium', levels: ['low', 'medium'] }, { slug: 'gpt-reserve', visibility: 'hide', levels: [] }],
+  fetchedAt: 1234,
+};
+
+test('codex-oauth provider: default url, effort map, sanitized login record', () => {
+  const p = normalizeProvider({ auth: 'codex-oauth' });
+  assert.equal(p.url, 'https://chatgpt.com/backend-api/codex');
+  assert.deepEqual(p.effortMap, { low: 'low', medium: 'medium', high: 'xhigh', max: 'max' });
+  assert.equal(p.codex, null);
+  assert.equal(p.key, null);
+
+  const q = normalizeProvider({ auth: 'codex-oauth', url: 'http://127.0.0.1:9', effortMap: { high: 'max', bogus: 'x', low: 7 }, codex: { ...LOGIN, extra: true, tokens: { ...LOGIN.tokens, junk: 1 } } });
+  assert.equal(q.url, 'http://127.0.0.1:9');
+  assert.deepEqual(q.effortMap, { low: 'low', medium: 'medium', high: 'max', max: 'max' });
+  assert.deepEqual(Object.keys(q.codex).sort(), ['account', 'fetchedAt', 'models', 'tokens']);
+  assert.deepEqual(Object.keys(q.codex.tokens).sort(), ['access', 'accountId', 'expiresAt', 'idToken', 'refresh']);
+  assert.equal(q.codex.models.length, 2);
+  assert.equal(q.codex.models[1].displayName, 'gpt-reserve');
+
+  // other auth modes carry neither field
+  const r = normalizeProvider({ auth: 'replace', key: 'k', url: 'https://x.y', codex: LOGIN, effortMap: { high: 'max' } });
+  assert.equal(r.codex, null);
+  assert.equal(r.effortMap, null);
+});
+
+test('upsert keeps the stored login when the form omits it; setCodexAuth merges; clearCodexAuth wipes', () => {
+  const reg = emptyRegistry();
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth' });
+  setCodexAuth(reg, 'codex', LOGIN);
+  assert.equal(reg.providers.codex.codex.tokens.accountId, 'acc-1');
+  // the dashboard form re-saves without a codex field (and a blank url)
+  upsertProvider(reg, 'codex', { label: 'Codex', auth: 'codex-oauth', url: '' });
+  assert.equal(reg.providers.codex.codex.tokens.accountId, 'acc-1');
+  assert.equal(reg.providers.codex.url, 'https://chatgpt.com/backend-api/codex');
+  assert.equal(reg.providers.codex.effortMap.high, 'xhigh');
+  // a token refresh only touches tokens
+  setCodexAuth(reg, 'codex', { tokens: { ...LOGIN.tokens, access: 'A2' } });
+  assert.equal(reg.providers.codex.codex.tokens.access, 'A2');
+  assert.equal(reg.providers.codex.codex.account.email, 'me@example.com');
+  assert.equal(reg.providers.codex.codex.models.length, 2);
+  assert.throws(() => setCodexAuth(reg, 'nope', LOGIN), /unknown provider/);
+  upsertProvider(reg, 'plain', { auth: 'replace', key: 'k', url: 'https://x.y' });
+  assert.throws(() => setCodexAuth(reg, 'plain', LOGIN), /not codex-oauth/);
+  clearCodexAuth(reg, 'codex');
+  assert.equal(reg.providers.codex.codex, null);
+});
+
+test('public view exposes login state and model slugs, never a token; round-trips through the file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'prov-codex-'));
+  const file = path.join(dir, 'providers.json');
+  const reg = emptyRegistry();
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth' });
+  setCodexAuth(reg, 'codex', LOGIN);
+  const pub = publicRegistry(reg);
+  const view = pub.providers[0];
+  assert.deepEqual(view.codex, { loggedIn: true, email: 'me@example.com', plan: 'plus', expiresAt: 4102444800000, models: ['gpt-5.5'] });
+  assert.deepEqual(view.effortMap, { low: 'low', medium: 'medium', high: 'xhigh', max: 'max' });
+  const text = JSON.stringify(pub);
+  assert.equal(text.includes(LOGIN.tokens.access), false);
+  assert.equal(text.includes('"refresh"'), false);
+  assert.equal(text.includes('"R"'), false);
+  saveProviders(file, reg);
+  const back = loadProviders(file);
+  assert.equal(back.providers.codex.codex.tokens.refresh, 'R');
+  assert.equal(back.providers.codex.codex.models[0].slug, 'gpt-5.5');
+  assert.equal(publicRegistry(emptyRegistry()).providers.length, 0);
+  const off = emptyRegistry();
+  upsertProvider(off, 'codex', { auth: 'codex-oauth' });
+  assert.deepEqual(publicRegistry(off).providers[0].codex, { loggedIn: false, email: null, plan: null, expiresAt: null, models: [] });
   fs.rmSync(dir, { recursive: true, force: true });
 });
