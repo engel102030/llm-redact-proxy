@@ -89,18 +89,21 @@ export function createStats({ log = console.log } = {}) {
     return entry;
   }
 
-  // Completes a record once the upstream response is done.
-  function finish(entry, { status = null, durationMs = null, inputTokens = null, outputTokens = null, respBytes = null } = {}) {
+  // Completes a record once the upstream response is done. `note` is a short
+  // free-text tag for the log line (e.g. the codex model + effort) - never a
+  // value from the body.
+  function finish(entry, { status = null, durationMs = null, inputTokens = null, outputTokens = null, respBytes = null, note = null } = {}) {
     if (!entry) return;
     entry.status = status;
     entry.durationMs = durationMs;
     entry.inputTokens = inputTokens;
     entry.outputTokens = outputTokens;
     entry.respBytes = respBytes;
+    entry.note = note;
     if (inputTokens) totals.inputTokens += inputTokens;
     if (outputTokens) totals.outputTokens += outputTokens;
     const tok = inputTokens || outputTokens ? ` tok in ${inputTokens ?? 0}/out ${outputTokens ?? 0}` : '';
-    log(`[redact] ${entry.method} ${entry.path} -> ${status ?? '-'} ${durationMs ?? '?'}ms${tok}`);
+    log(`[redact] ${entry.method} ${entry.path} -> ${status ?? '-'} ${durationMs ?? '?'}ms${tok}${note ? ` ${note}` : ''}`);
   }
 
   // Open feed: NEVER includes matched values. Strips captures from every entry.

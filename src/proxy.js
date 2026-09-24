@@ -14,6 +14,7 @@ import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-au
 import { buildModelsResponse, stripOneMTag, addOneMBeta } from './models.js';
 import { applyAliasToBody } from './providers.js';
 import { createSseRehydrator, rehydrateJsonBody } from './rehydrate.js';
+import { handleCodexUpstream } from './codex-upstream.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
 const UPSTREAM_TIMEOUT_MS = 10 * 60 * 1000; // generous: SSE streams run long
@@ -80,8 +81,11 @@ function blockRequest(res, reason) {
   );
 }
 
-export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth, getRestore }) {
+export function createProxyServer({ config, redactor, stats, getUpstream, controller, getOAuth, getRestore, codexAdapter }) {
   const oauthOf = getOAuth ?? (() => readClaudeOAuth());
+  // Codex (ChatGPT subscription) credentials for the active provider, resolved
+  // per request. Tests inject a fake adapter; the runtime supplies the real one.
+  const codexOf = codexAdapter ?? (() => (controller && typeof controller.codexAdapter === 'function' ? controller.codexAdapter() : null));
   // Response rehydration state, resolved per request so the dashboard toggle
   // takes effect live. Default off (no getter) - back-compat for tests.
   const restoreOf = getRestore ?? (() => ({ enabled: false, map: new Map() }));
@@ -212,6 +216,25 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
     } else {
       entry = stats.record({ method: req.method, path: req.url, events: [], reqBytes });
       stats.rememberReq(entry?.id, ''); // no body (e.g. GET) - still capture the response
+    }
+
+    // Codex backend (ChatGPT subscription): a different wire protocol, so the
+    // redacted body is TRANSLATED and the response translated back on a
+    // dedicated path. The generic forward below never runs for codex-oauth.
+    if (up.auth === 'codex-oauth') {
+      await handleCodexUpstream({
+        req,
+        res,
+        up,
+        entry,
+        stats,
+        t0,
+        bodyText: outBody ? outBody.toString('utf8') : '',
+        codex: codexOf(),
+        aliases: controller?.activeAliases ?? {},
+        timeoutMs: UPSTREAM_TIMEOUT_MS,
+      });
+      return;
     }
 
     const headers = {};
