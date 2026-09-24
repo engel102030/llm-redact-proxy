@@ -5,6 +5,17 @@ import { createRedactor, MODES, MODE_RANK } from './redact.js';
 import { loadSettings, saveSettings } from './settings.js';
 import { isAnthropicHost } from './claude-auth.js';
 import { buildMarkerMap } from './rehydrate.js';
+import {
+  loadProviders,
+  saveProviders,
+  emptyRegistry,
+  upsertProvider as regUpsert,
+  removeProvider as regRemove,
+  setActive as regSetActive,
+  activeProvider as regActive,
+  resolveModel as regResolveModel,
+  publicRegistry,
+} from './providers.js';
 
 export function createRuntime({ config, secrets = [] }) {
   let mode = config.redactMode;
@@ -130,6 +141,61 @@ export function createRuntime({ config, secrets = [] }) {
     }
   }
 
+  // ---- provider registry (multi-upstream + per-provider model aliases) ----
+  // The ACTIVE provider drives `upstream`; its alias map and custom headers
+  // apply per request. When the registry is empty (no providers.json), nothing
+  // changes and the proxy behaves exactly as the single-upstream config above.
+  let registry = loadProviders(config.providersFile) ?? emptyRegistry();
+  let activeAliases = {};
+  let activeHeaders = {};
+
+  function syncActiveProvider() {
+    const p = regActive(registry);
+    activeAliases = p?.aliases ?? {};
+    activeHeaders = p?.headers ?? {};
+    if (p && p.url) {
+      // Seed the live upstream from the active provider. persist:false - the
+      // registry (providers.json) is the source of truth and is saved on CRUD.
+      apply({ upstreamUrl: p.url, upstreamAuth: p.auth, upstreamKey: p.key }, { persist: false });
+    }
+  }
+  function persistRegistry() {
+    saveProviders(config.providersFile, registry);
+  }
+  function upsertProvider(id, input) {
+    regUpsert(registry, id, input);
+    persistRegistry();
+    syncActiveProvider();
+    return publicRegistry(registry);
+  }
+  function removeProvider(id) {
+    regRemove(registry, id);
+    persistRegistry();
+    syncActiveProvider();
+    return publicRegistry(registry);
+  }
+  function activateProvider(id) {
+    regSetActive(registry, id);
+    persistRegistry();
+    syncActiveProvider();
+    return publicRegistry(registry);
+  }
+  // Internal: the full active-provider record (holds the key + headers) for
+  // server-side use only, e.g. the dashboard fetching a provider's model list.
+  function providerFor(id) {
+    return registry.providers[id] ?? null;
+  }
+  // alias -> real upstream model id for the active provider (unchanged if none).
+  function resolveModel(model) {
+    return regResolveModel({ aliases: activeAliases }, model);
+  }
+
+  try {
+    syncActiveProvider();
+  } catch (err) {
+    console.warn(`[redact] ignoring invalid providers.json: ${err.message}`);
+  }
+
   return {
     holder,
     upstream,
@@ -146,6 +212,19 @@ export function createRuntime({ config, secrets = [] }) {
     },
     get showRedactedValues() {
       return showRedactedValues;
+    },
+    // provider registry
+    providers: () => publicRegistry(registry),
+    providerFor,
+    upsertProvider,
+    removeProvider,
+    activateProvider,
+    resolveModel,
+    get activeHeaders() {
+      return activeHeaders;
+    },
+    get activeAliases() {
+      return activeAliases;
     },
   };
 }

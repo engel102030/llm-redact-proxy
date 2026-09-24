@@ -11,6 +11,23 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
     res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' });
     res.end(JSON.stringify(obj));
   };
+  // Read a small JSON request body, then hand it to the callback. 400 on bad JSON.
+  const readJson = (handler) => {
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+      if (body.length > 262144) req.destroy();
+    });
+    req.on('end', () => {
+      let parsed;
+      try {
+        parsed = JSON.parse(body || '{}');
+      } catch {
+        return json(400, { ok: false, error: 'invalid json' });
+      }
+      handler(parsed);
+    });
+  };
 
   if (path === '/__redact/config') {
     if (!controller) return json(404, { error: 'config not available' });
@@ -61,6 +78,87 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
     return json(200, { enabled: true, ...stats.revealValues() });
   }
 
+  // Guarded debug inspector: the full forwarded request + raw response for one
+  // of the last 30 requests. Same CSRF guard. Neither body holds a user secret
+  // (request already redacted; response is vendor output before restore).
+  if (path === '/__redact/inspect') {
+    if (req.headers['x-redact-panel'] !== '1') {
+      return json(403, { error: 'missing panel header' });
+    }
+    const id = new URL(req.url ?? '', 'http://x').searchParams.get('id');
+    const b = stats.getBodies ? stats.getBodies(id) : null;
+    if (!b) return json(404, { error: 'not captured (only the last 30 are kept)' });
+    return json(200, { id: Number(id), req: b.req, resp: b.resp });
+  }
+
+  // ---- provider registry: list / create-update / activate / delete ----
+  const panelGuard = () => req.headers['x-redact-panel'] === '1';
+  if (path === '/__redact/providers') {
+    if (!controller?.providers) return json(404, { error: 'registry not available' });
+    if (method === 'GET') return json(200, controller.providers());
+    if (method === 'POST') {
+      if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+      return readJson((p) => {
+        try {
+          const registry = controller.upsertProvider(p.id, {
+            label: p.label,
+            url: p.url,
+            auth: p.auth,
+            key: p.key,
+            headers: p.headers,
+            aliases: p.aliases,
+          });
+          json(200, { ok: true, registry });
+        } catch (err) {
+          json(400, { ok: false, error: err.message });
+        }
+      });
+    }
+    return json(405, { error: 'method not allowed' });
+  }
+  if (path === '/__redact/providers/activate' && method === 'POST') {
+    if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+    if (!controller?.activateProvider) return json(404, { error: 'registry not available' });
+    return readJson((p) => {
+      try {
+        json(200, { ok: true, registry: controller.activateProvider(p.id) });
+      } catch (err) {
+        json(400, { ok: false, error: err.message });
+      }
+    });
+  }
+  if (path === '/__redact/providers/delete' && method === 'POST') {
+    if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+    if (!controller?.removeProvider) return json(404, { error: 'registry not available' });
+    return readJson((p) => {
+      try {
+        json(200, { ok: true, registry: controller.removeProvider(p.id) });
+      } catch (err) {
+        json(400, { ok: false, error: err.message });
+      }
+    });
+  }
+  // Server-side fetch of a provider's real model list (uses its key + custom
+  // headers, so it can clear a Cloudflare gate the browser cannot). Ids only.
+  if (path === '/__redact/provider/models') {
+    if (!panelGuard()) return json(403, { error: 'missing panel header' });
+    if (!controller?.providerFor) return json(404, { error: 'registry not available' });
+    const id = new URL(req.url ?? '', 'http://x').searchParams.get('id');
+    const p = controller.providerFor(id);
+    if (!p) return json(404, { error: 'unknown provider' });
+    fetchProviderModels(p)
+      .then((r) => json(r.ok ? 200 : 502, r))
+      .catch((e) => json(502, { ok: false, error: String(e) }));
+    return;
+  }
+
+  // ---- clear all counters + the recent-request log ----
+  if (path === '/__redact/reset' && method === 'POST') {
+    if (!panelGuard()) return json(403, { ok: false, error: 'missing panel header' });
+    if (stats.reset) stats.reset();
+    return json(200, { ok: true });
+  }
+
   if (path === '/__redact' || path === '/__redact/') {
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     res.end(PAGE);
@@ -68,6 +166,34 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
   }
 
   return json(404, { error: 'not found' });
+}
+
+// Fetch a provider's real /v1/models list server-side, with its key + custom
+// headers (e.g. a browser User-Agent to clear Cloudflare). Returns ids only.
+async function fetchProviderModels(provider) {
+  const base = String(provider.url ?? '').replace(/\/$/, '');
+  if (!base) return { ok: false, status: 0, error: 'provider has no url' };
+  const headers = { 'anthropic-version': '2023-06-01', accept: 'application/json', ...(provider.headers ?? {}) };
+  if (provider.auth === 'replace' && provider.key) {
+    headers['x-api-key'] = provider.key;
+    headers.authorization = `Bearer ${provider.key}`;
+  }
+  let r;
+  try {
+    r = await fetch(`${base}/v1/models`, { headers });
+  } catch (e) {
+    return { ok: false, status: 0, error: String(e?.message ?? e) };
+  }
+  const text = await r.text();
+  if (!r.ok) return { ok: false, status: r.status, error: text.slice(0, 200) };
+  let models = [];
+  try {
+    const data = JSON.parse(text).data;
+    if (Array.isArray(data)) models = data.map((m) => m && m.id).filter((x) => typeof x === 'string');
+  } catch {
+    return { ok: false, status: r.status, error: 'upstream /v1/models was not a JSON list' };
+  }
+  return { ok: true, status: r.status, models };
 }
 
 const PAGE = `<!doctype html>
@@ -129,7 +255,10 @@ header{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:14px;
   background-position:calc(100% - 16px) 55%,calc(100% - 11px) 55%;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:30px}
 .hint{color:var(--faint);font-size:12px;margin-top:6px;line-height:1.5}
 .span2{grid-column:1/-1}
-.linkbtn{background:none;border:0;color:var(--accent);font:inherit;font-size:12.5px;cursor:pointer;padding:6px 0 0;text-decoration:underline;text-underline-offset:2px}
+.linkbtn{background:none;border:0;color:var(--accent);font:inherit;font-size:12.5px;cursor:pointer;padding:2px 0;text-decoration:underline;text-underline-offset:2px}
+.ip{background:var(--card2);color:var(--fg);border:1px solid var(--line2);border-radius:8px;padding:8px 10px;font:inherit;font-size:13px}
+.ip:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+.caprow{align-items:center}
 
 .toggles{display:grid;gap:2px;margin-top:16px;border-top:1px solid var(--line);padding-top:6px}
 .toggle{display:flex;gap:12px;align-items:flex-start;padding:12px 2px;border-bottom:1px solid var(--line)}
@@ -187,6 +316,23 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 .sechd h2{margin:0;font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--dim)}
 .count{font-size:11px;color:var(--faint);font-family:var(--mono)}
 .hidec{display:none}
+tbody tr.rowclick{cursor:pointer}
+.modal{position:fixed;inset:0;z-index:20;display:none;background:rgba(3,6,12,.66);backdrop-filter:blur(3px);padding:32px}
+.modal.on{display:flex}
+.modal .box{margin:auto;width:min(1000px,100%);max-height:100%;display:flex;flex-direction:column;
+  background:var(--card);border:1px solid var(--line2);border-radius:14px;box-shadow:0 24px 64px -24px rgba(0,0,0,.7);overflow:hidden}
+.modal .top{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--line)}
+.modal .top h3{margin:0;font-size:13px;font-weight:650}
+.modal .top .x{margin-left:auto;background:none;border:0;color:var(--dim);font-size:20px;cursor:pointer;line-height:1;padding:0 4px}
+.modal .top .x:hover{color:var(--fg)}
+.modal .body{overflow:auto;padding:0}
+.modal .seg{padding:14px 18px;border-bottom:1px solid var(--line)}
+.modal .seg:last-child{border-bottom:0}
+.modal .seg .lbl{display:flex;align-items:center;gap:8px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);font-weight:650;margin-bottom:8px}
+.modal .seg .lbl button{margin-left:auto;font-size:11px;background:var(--card2);border:1px solid var(--line2);color:var(--dim);border-radius:6px;padding:3px 8px;cursor:pointer}
+.modal .seg .lbl button:hover{color:var(--fg)}
+.modal pre{margin:0;white-space:pre-wrap;word-break:break-word;font-family:var(--mono);font-size:11.5px;line-height:1.55;
+  color:var(--fg);background:var(--card2);border:1px solid var(--line);border-radius:9px;padding:12px;max-height:44vh;overflow:auto}
 </style></head><body>
 <div class="app">
 <header>
@@ -206,7 +352,8 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
         <select id="c_auth">
           <option value="passthrough">passthrough &mdash; forward caller's token</option>
           <option value="replace">replace &mdash; inject the key below</option>
-          <option value="oauth">oauth &mdash; my Claude subscription (official only)</option></select></div>
+          <option value="oauth">oauth &mdash; my Claude subscription (official only)</option>
+          </select></div>
       <div class="f"><label class="lbl">Provider key <span class="faint">(only for replace)</span></label>
         <input id="c_key" type="password" placeholder="leave blank to keep current"></div>
       <div class="f span2"><label class="lbl">Redaction mode</label>
@@ -235,9 +382,47 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
   </div>
 </div>
 
+<div class="card">
+  <div class="hd"><h2>providers</h2></div>
+  <div class="bd">
+    <div id="provlist" class="wrap"></div>
+    <div class="actions"><button class="ghost" id="p_new">+ New provider</button><span id="provmsg" class="mut"></span></div>
+
+    <div id="proveditor" class="hidec" style="margin-top:14px;border-top:1px solid var(--line);padding-top:16px">
+      <div class="form">
+        <div class="f"><label class="lbl">ID (slug)</label><input id="p_id" placeholder="euromodels"></div>
+        <div class="f"><label class="lbl">Label <span class="faint">(optional)</span></label><input id="p_label" placeholder="EuroModels"></div>
+        <div class="f span2"><label class="lbl">Provider URL</label><input id="p_url" placeholder="https://euromodels.xyz/anthropic"></div>
+        <div class="f"><label class="lbl">Auth</label>
+          <select id="p_auth"><option value="replace">replace &mdash; inject key</option><option value="passthrough">passthrough</option><option value="oauth">oauth (official only)</option></select></div>
+        <div class="f"><label class="lbl">Key <span class="faint">(replace)</span></label><input id="p_key" type="password" placeholder="blank keeps current"></div>
+        <div class="f span2"><label class="lbl">User-Agent header <span class="faint">(optional &mdash; clears Cloudflare gates)</span></label>
+          <input id="p_ua" placeholder="Mozilla/5.0 (Macintosh&hellip;) Chrome/124.0 Safari/537.36"></div>
+      </div>
+
+      <div class="sechd" style="margin:20px 2px 8px">
+        <h2>model aliases <span class="faint" style="text-transform:none;letter-spacing:0">custom name &rarr; real upstream id</span></h2>
+        <button class="ghost" id="p_fetch">fetch models</button>
+      </div>
+      <div id="aliaslist"></div>
+      <datalist id="modeldl"></datalist>
+      <div class="actions" style="margin-top:8px"><button class="ghost" id="p_addalias">+ alias</button><span id="fetchmsg" class="faint" style="font-size:12px"></span></div>
+
+      <div class="actions">
+        <button class="btn" id="p_save">Save provider</button>
+        <button class="ghost" id="p_cancel">Cancel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="tiles" id="tiles"></div>
 
-<div class="sechd"><h2>recent requests</h2><span class="count" id="reqcount"></span></div>
+<div class="sechd"><h2>recent requests</h2>
+  <span style="display:flex;align-items:center;gap:12px;margin-left:auto">
+    <span class="count" id="reqcount"></span>
+    <button class="ghost" id="resetbtn" style="padding:6px 12px;font-size:12px">clear logs &amp; counters</button>
+  </span></div>
 <div class="warnbar" id="valwarn">Values are being revealed below &mdash; anyone with access to this screen can read your credentials.</div>
 <div class="wrap"><table id="reqtbl">
 <thead><tr><th>time</th><th>method</th><th>path</th><th>status</th>
@@ -250,6 +435,17 @@ td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
 <thead><tr><th>rule</th><th class="num">count</th><th class="valcol hidec">matched values (recent)</th></tr></thead>
 <tbody id="rulebody"></tbody></table></div>
 <p class="empty" id="footnote">Values are never shown, stored or logged &mdash; names and counts only.</p>
+<p class="empty faint" style="margin-top:-4px">Click a request to inspect the exact body sent and the raw response (last 30 kept).</p>
+</div>
+
+<div class="modal" id="modal">
+  <div class="box">
+    <div class="top"><h3 id="m_title">request</h3><button class="x" id="m_close" type="button">&times;</button></div>
+    <div class="body">
+      <div class="seg"><div class="lbl">request sent (redacted)<button id="m_copyreq" type="button">copy</button></div><pre id="m_req"></pre></div>
+      <div class="seg"><div class="lbl">raw response (before restore)<button id="m_copyresp" type="button">copy</button></div><pre id="m_resp"></pre></div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -310,9 +506,36 @@ $('c_official').onclick=()=>{$('c_url').value='https://api.anthropic.com';$('cfg
 
 // click a revealed value to copy it
 document.addEventListener('click',(e)=>{const el=e.target.closest('.cap');if(!el)return;
+  e.stopPropagation();
   const v=el.getAttribute('data-full');if(!v)return;
   navigator.clipboard&&navigator.clipboard.writeText(v);
   const old=el.textContent;el.textContent='copied';setTimeout(()=>{el.textContent=old;},700);});
+
+// pretty-print a request body (JSON) for the inspector; leave anything else raw
+function pretty(s){try{return JSON.stringify(JSON.parse(s),null,2);}catch(e){return s;}}
+function closeModal(){$('modal').classList.remove('on');}
+function copyBtn(id,txt){navigator.clipboard&&navigator.clipboard.writeText(txt);const b=$(id);const o=b.textContent;b.textContent='copied';setTimeout(()=>{b.textContent=o;},700);}
+async function openInspect(id){
+  $('m_title').textContent='request #'+id;
+  $('m_req').textContent='loading\\u2026';$('m_resp').textContent='';
+  $('modal').classList.add('on');
+  try{
+    const r=await fetch('inspect?id='+encodeURIComponent(id),{cache:'no-store',headers:{'x-redact-panel':'1'}});
+    if(!r.ok){$('m_req').textContent='(not captured \\u2014 only the last 30 requests are kept)';return;}
+    const d=await r.json();
+    const reqTxt=pretty(d.req||''), respTxt=d.resp||'';
+    $('m_req').textContent=reqTxt||'(empty)';
+    $('m_resp').textContent=respTxt||'(empty)';
+    $('m_copyreq').onclick=()=>copyBtn('m_copyreq',reqTxt);
+    $('m_copyresp').onclick=()=>copyBtn('m_copyresp',respTxt);
+  }catch(e){$('m_req').textContent='inspect failed: '+e;}
+}
+// click a request row to inspect it
+document.addEventListener('click',(e)=>{const tr=e.target.closest('tr.rowclick');if(!tr)return;
+  const id=tr.getAttribute('data-id');if(id)openInspect(id);});
+$('m_close').onclick=closeModal;
+$('modal').addEventListener('click',(e)=>{if(e.target===$('modal'))closeModal();});
+document.addEventListener('keydown',(e)=>{if(e.key==='Escape')closeModal();});
 
 function statusCell(e){
   if(e.blocked)return '<span class="pill warn">blocked</span>';
@@ -355,7 +578,7 @@ async function tick(){
 
   $('reqcount').textContent=d.recent.length?d.recent.length+' shown':'';
   $('reqbody').innerHTML = d.recent.length ? d.recent.map(e=>
-    '<tr><td class="mut mono">'+esc(e.time.slice(11,19))+'</td><td>'+esc(e.method)+'</td>'
+    '<tr class="rowclick" data-id="'+e.id+'"><td class="mut mono">'+esc(e.time.slice(11,19))+'</td><td>'+esc(e.method)+'</td>'
     +'<td class="path">'+esc(e.path)+'</td><td>'+statusCell(e)+'</td>'
     +'<td class="num">'+(e.durationMs==null?'-':n(e.durationMs))+'</td>'
     +'<td class="num faint">'+bytes(e.reqBytes)+'</td><td class="num faint">'+bytes(e.respBytes)+'</td>'
@@ -372,6 +595,110 @@ async function tick(){
     return '<tr><td><span class="rulechip">'+esc(r)+'</span></td><td class="num">'+n(c)+'</td>'+valcell+'</tr>';
   }).join('') : '<tr><td colspan="3" class="empty">none yet</td></tr>';
 }
-loadCfg();tick();setInterval(tick,1500);
+// ---------- providers registry ----------
+let curProviders=[],editingId=null;
+const findProv=(id)=>curProviders.find(p=>p.id===id);
+async function loadProviders(){
+  try{const reg=await (await fetch('providers',{cache:'no-store'})).json();renderProviders(reg);}
+  catch(e){$('provlist').innerHTML='<div class="empty">registry unavailable</div>';}
+}
+function renderProviders(reg){
+  curProviders=reg.providers||[];
+  if(!curProviders.length){$('provlist').innerHTML='<div class="empty">no providers yet \\u2014 add one below</div>';return;}
+  let h='<table><thead><tr><th>id</th><th>url</th><th>auth</th><th class="num">aliases</th><th></th></tr></thead><tbody>';
+  for(const p of curProviders){
+    const active=p.id===reg.active;
+    h+='<tr><td><b>'+esc(p.id)+'</b>'+(active?' <span class="pill ok">active</span>':'')+(p.label?'<div class="faint mono">'+esc(p.label)+'</div>':'')+'</td>'
+      +'<td class="mono faint">'+esc(trunc(p.url||'\\u2014',46))+'</td>'
+      +'<td>'+esc(p.auth)+(p.hasKey?' <span class="faint">\\u00b7 key</span>':'')+'</td>'
+      +'<td class="num">'+Object.keys(p.aliases||{}).length+'</td>'
+      +'<td style="white-space:nowrap;text-align:right">'
+        +(active?'':'<button class="linkbtn" data-act="activate" data-id="'+esc(p.id)+'">activate</button> &nbsp;')
+        +'<button class="linkbtn" data-act="edit" data-id="'+esc(p.id)+'">edit</button> &nbsp;'
+        +'<button class="linkbtn" data-act="del" data-id="'+esc(p.id)+'" style="color:var(--red)">delete</button>'
+      +'</td></tr>';
+  }
+  $('provlist').innerHTML=h+'</tbody></table>';
+}
+$('provlist').addEventListener('click',async(e)=>{
+  const b=e.target.closest('button[data-act]');if(!b)return;
+  const id=b.getAttribute('data-id'),act=b.getAttribute('data-act');
+  if(act==='activate')await provPost('providers/activate',{id});
+  else if(act==='del'){if(confirm('Delete provider "'+id+'"?'))await provPost('providers/delete',{id});}
+  else if(act==='edit')openEditor(id);
+});
+async function provPost(pathx,body){
+  try{
+    const r=await fetch(pathx,{method:'POST',headers:{'content-type':'application/json','x-redact-panel':'1'},body:JSON.stringify(body)});
+    const d=await r.json();
+    if(d.ok){$('provmsg').textContent='saved \\u2014 applied live';$('provmsg').className='ok';renderProviders(d.registry);loadCfg();tick();return true;}
+    $('provmsg').textContent='error: '+(d.error||r.status);$('provmsg').className='err';return false;
+  }catch(e){$('provmsg').textContent='failed: '+e;$('provmsg').className='err';return false;}
+}
+function aliasRow(a,real){
+  const div=document.createElement('div');div.className='caprow';div.style.margin='7px 0';
+  div.innerHTML='<input class="a-name ip" placeholder="claude-opus-4-8" style="max-width:230px" value="'+esc(a||'')+'">'
+    +'<span class="faint">\\u2192</span>'
+    +'<input class="a-real ip" list="modeldl" placeholder="accounts/\\u2026/claude-opus-4-8" style="flex:1;min-width:240px" value="'+esc(real||'')+'">'
+    +'<button class="linkbtn a-del" style="color:var(--red)">remove</button>';
+  return div;
+}
+function renderAliases(aliases){
+  const box=$('aliaslist');box.innerHTML='';
+  const ent=Object.entries(aliases||{});
+  if(!ent.length)box.appendChild(aliasRow('',''));
+  else for(const [a,r] of ent)box.appendChild(aliasRow(a,r));
+}
+$('aliaslist').addEventListener('click',(e)=>{const b=e.target.closest('.a-del');if(b)b.closest('.caprow').remove();});
+$('p_addalias').onclick=()=>$('aliaslist').appendChild(aliasRow('',''));
+function openEditor(id){
+  editingId=id||null;
+  const p=id?findProv(id):null;
+  $('p_id').value=p?p.id:'';$('p_id').disabled=!!p;
+  $('p_label').value=(p&&p.label)?p.label:'';
+  $('p_url').value=p?(p.url||''):'';
+  $('p_auth').value=p?p.auth:'replace';
+  $('p_key').value='';$('p_key').placeholder=(p&&p.hasKey)?'(key set \\u2014 blank keeps it)':'blank keeps current';
+  $('p_ua').value=(p&&p.headers)?(p.headers['user-agent']||''):'';
+  renderAliases(p?p.aliases:{});
+  $('modeldl').innerHTML='';$('fetchmsg').textContent='';$('provmsg').textContent='';
+  $('proveditor').classList.remove('hidec');
+  $('proveditor').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+$('p_new').onclick=()=>openEditor(null);
+$('p_cancel').onclick=()=>{$('proveditor').classList.add('hidec');editingId=null;};
+$('p_fetch').onclick=async()=>{
+  const id=$('p_id').value.trim();
+  if(!id){$('fetchmsg').textContent='enter an ID and Save the provider first';return;}
+  $('fetchmsg').textContent='fetching\\u2026';
+  try{
+    const r=await fetch('provider/models?id='+encodeURIComponent(id),{cache:'no-store',headers:{'x-redact-panel':'1'}});
+    const d=await r.json();
+    if(d.ok){$('modeldl').innerHTML=d.models.map(m=>'<option value="'+esc(m)+'">').join('');
+      $('fetchmsg').textContent=d.models.length+' models fetched \\u2014 pick from the \\u2192 dropdowns';}
+    else if(r.status===404)$('fetchmsg').textContent='save this provider first, then fetch';
+    else $('fetchmsg').textContent='fetch failed ('+(d.status||r.status)+'): '+esc(trunc(d.error||'',90));
+  }catch(e){$('fetchmsg').textContent='fetch failed: '+e;}
+};
+$('p_save').onclick=async()=>{
+  const id=$('p_id').value.trim();
+  if(!id){$('provmsg').textContent='id required';$('provmsg').className='err';return;}
+  const aliases={};
+  document.querySelectorAll('#aliaslist .caprow').forEach(row=>{
+    const a=row.querySelector('.a-name').value.trim(),r=row.querySelector('.a-real').value.trim();
+    if(a&&r)aliases[a]=r;
+  });
+  const headers={};const ua=$('p_ua').value.trim();if(ua)headers['user-agent']=ua;
+  const body={id,label:$('p_label').value.trim()||null,url:$('p_url').value.trim(),auth:$('p_auth').value,headers,aliases};
+  if($('p_key').value)body.key=$('p_key').value;
+  if(await provPost('providers',body)){$('proveditor').classList.add('hidec');editingId=null;}
+};
+// clear counters + logs
+$('resetbtn').onclick=async()=>{
+  if(!confirm('Clear all counters and the recent-request log?'))return;
+  try{await fetch('reset',{method:'POST',headers:{'x-redact-panel':'1'}});tick();}catch(e){}
+};
+
+loadCfg();loadProviders();tick();setInterval(tick,1500);
 </script>
 </body></html>`;

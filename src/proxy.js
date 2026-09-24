@@ -11,7 +11,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { injectNotice } from './inject.js';
 import { handleDashboard } from './dashboard.js';
 import { readClaudeOAuth, isAnthropicHost, applyOAuthHeaders } from './claude-auth.js';
-import { buildModelsResponse } from './models.js';
+import { buildModelsResponse, stripOneMTag, addOneMBeta } from './models.js';
+import { applyAliasToBody } from './providers.js';
 import { createSseRehydrator, rehydrateJsonBody } from './rehydrate.js';
 
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -148,6 +149,9 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
     let entry = null;
     let outBody = null;
     let keepContentEncoding = false;
+    // Set when a "[1m]" tag was stripped from the request model (see below): the
+    // upstream then needs the 1M-context beta flag to accept a large window.
+    let oneMRequested = false;
     if (rawBuffer.length > 0) {
       try {
         const decompressed = decompress(rawBuffer, req.headers['content-encoding']);
@@ -172,8 +176,24 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             // Non-JSON body: the markers alone carry the signal.
           }
         }
+        // Strip the proxy's own "[1m]" marker from the model id: it is a
+        // /v1/models UI signal, not a real model - upstreams reject the literal
+        // "...[1m]" id ("model is not enabled"). Done after redaction so the
+        // remembered body matches exactly what leaves the machine.
+        const oneM = stripOneMTag(finalBody);
+        finalBody = oneM.body;
+        oneMRequested = oneM.oneM;
+        // Rewrite the model through the active provider's alias map (custom name
+        // -> real upstream id, e.g. "claude-opus-4-8" ->
+        // "accounts/euromodels/models/claude-opus-4-8"). After the [1m] strip so
+        // the clean custom name matches. No-op when no controller / no aliases.
+        if (controller?.activeAliases) {
+          finalBody = applyAliasToBody(finalBody, controller.activeAliases).body;
+        }
+
         entry = stats.record({ method: req.method, path: req.url, events, captures, reqBytes });
         outBody = Buffer.from(finalBody, 'utf8');
+        stats.rememberReq(entry?.id, finalBody); // exactly what leaves the machine (redacted)
       } catch (err) {
         if (config.failClosed) {
           stats.record({ method: req.method, path: req.url, blocked: true, reason: err.message, reqBytes });
@@ -187,9 +207,11 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
         entry = stats.record({ method: req.method, path: req.url, events: [], reqBytes });
         outBody = rawBuffer;
         keepContentEncoding = true;
+        stats.rememberReq(entry?.id, rawBuffer.toString('utf8'));
       }
     } else {
       entry = stats.record({ method: req.method, path: req.url, events: [], reqBytes });
+      stats.rememberReq(entry?.id, ''); // no body (e.g. GET) - still capture the response
     }
 
     const headers = {};
@@ -199,6 +221,12 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
       if (k === 'host' || k === 'content-length' || k === 'expect') continue;
       if (k === 'content-encoding' && !keepContentEncoding) continue;
       headers[k] = value;
+    }
+    // Active provider's custom headers (e.g. a browser User-Agent to clear a
+    // Cloudflare gate). Applied before auth so the auth block still wins for the
+    // credential; host/content-length are re-set below regardless.
+    if (controller?.activeHeaders) {
+      for (const [k, v] of Object.entries(controller.activeHeaders)) headers[k] = v;
     }
     if (up.auth === 'replace') {
       // Drop whatever credential the client sent and inject OUR key. Anthropic-
@@ -239,6 +267,10 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
       // billing-header system block + metadata, which we must never alter.
       applyOAuthHeaders(headers, cred.accessToken);
     }
+    // A "[1m]" model select needs the 1M-context beta upstream so a large window
+    // is accepted. Never on the oauth path: a Claude subscription is not eligible
+    // for the 1M beta (the official API rejects it - see claude-auth.js).
+    if (oneMRequested && up.auth !== 'oauth') addOneMBeta(headers);
     headers.host = up.url.host;
     if (outBody) headers['content-length'] = String(outBody.length);
 
@@ -288,7 +320,8 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
             // gateway does not serve /v1/models (error / non-list) - the host
             // must still get a usable model picker. Always a 200.
             const rawBody = Buffer.concat(chunks).toString('utf8');
-            const { status, body } = buildModelsResponse(upstreamStatus, rawBody);
+            // Active provider's aliases (when set) become the exposed model list.
+            const { status, body } = buildModelsResponse(upstreamStatus, rawBody, controller?.activeAliases);
             const outBuf = Buffer.from(JSON.stringify(body), 'utf8');
             const h = { ...responseHeaders };
             delete h['content-encoding'];
@@ -310,14 +343,16 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
           return;
         }
 
-        // Shared counters: token usage + byte count for the dashboard. A small
-        // carry handles a usage number split across chunk boundaries. The body
-        // is never stored or logged.
+        // Shared counters: token usage + byte count for the dashboard, plus the
+        // full raw response text for the debug inspector (last 30). A small carry
+        // handles a usage number split across chunk boundaries.
         let respBytes = 0;
+        let respAcc = '';
         let inTok = null;
         let outTok = null;
         let carry = '';
         const scan = (s) => {
+          respAcc += s; // raw upstream text (pre-restore) for /__redact/inspect
           const textChunk = carry + s;
           for (const m of textChunk.matchAll(/"input_tokens":\s*(\d+)/g)) {
             const v = Number(m[1]);
@@ -333,6 +368,7 @@ export function createProxyServer({ config, redactor, stats, getUpstream, contro
         const finishStats = () => {
           if (finished) return;
           finished = true;
+          stats.rememberResp(entry?.id, respAcc);
           stats.finish(entry, {
             status: upstreamRes.statusCode ?? null,
             durationMs: Date.now() - t0,

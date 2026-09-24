@@ -118,6 +118,11 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
   const configFile = env.CONFIG_FILE
     ? path.resolve(cwd, env.CONFIG_FILE)
     : path.join(path.dirname(secretsFile), 'config.json');
+  // The provider registry (multiple named upstreams + model aliases) lives next
+  // to config.json by default. Holds keys, so it is written chmod 600.
+  const providersFile = env.PROVIDERS_FILE
+    ? path.resolve(cwd, env.PROVIDERS_FILE)
+    : path.join(path.dirname(secretsFile), 'providers.json');
 
   return {
     listenHost,
@@ -127,6 +132,7 @@ export function loadConfig({ env = process.env, cwd = process.cwd(), requireUpst
     upstreamKey,
     secretsFile,
     configFile,
+    providersFile,
     failClosed: get('FAIL_CLOSED') !== 'false',
     injectNotice: get('INJECT_NOTICE') !== 'false',
     redactMode,

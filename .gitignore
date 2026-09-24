@@ -12,3 +12,6 @@ secrets.local.*
 
 # internal project instructions - kept local, not published
 CLAUDE.md
+
+# Playwright MCP screenshots/traces
+.playwright-mcp/
