@@ -7,6 +7,9 @@ import {
   tagModelIds,
   modelsEnvelope,
   buildModelsResponse,
+  stripOneMTag,
+  addOneMBeta,
+  ONE_M_BETA,
 } from '../src/models.js';
 
 test('tagModelIds tags 1M families, leaves Haiku and Sonnet<5 base', () => {
@@ -80,4 +83,64 @@ test('modelsEnvelope first_id/last_id reference the array ends', () => {
   assert.equal(env.first_id, 'a');
   assert.equal(env.last_id, 'c');
   assert.equal(env.has_more, false);
+});
+
+test('stripOneMTag removes a trailing [1m] and preserves the rest of the body', () => {
+  const src = JSON.stringify({
+    model: 'claude-opus-4-8[1m]',
+    max_tokens: 16,
+    messages: [{ role: 'user', content: 'hi' }],
+  });
+  const { body, oneM } = stripOneMTag(src);
+  assert.equal(oneM, true);
+  const parsed = JSON.parse(body);
+  assert.equal(parsed.model, 'claude-opus-4-8');
+  assert.equal(parsed.max_tokens, 16);
+  assert.deepEqual(parsed.messages, [{ role: 'user', content: 'hi' }]);
+});
+
+test('stripOneMTag leaves a clean model id byte-identical (oneM=false)', () => {
+  const src = JSON.stringify({ model: 'claude-opus-4-8', messages: [] });
+  const { body, oneM } = stripOneMTag(src);
+  assert.equal(oneM, false);
+  assert.equal(body, src); // untouched - no re-serialization when nothing to strip
+});
+
+test('stripOneMTag only strips a TRAILING [1m], not one embedded elsewhere', () => {
+  const src = JSON.stringify({ model: 'claude-[1m]-opus', messages: [] });
+  const { body, oneM } = stripOneMTag(src);
+  assert.equal(oneM, false);
+  assert.equal(body, src);
+});
+
+test('stripOneMTag leaves a non-JSON body untouched (never breaks forwarding)', () => {
+  const src = 'not json <<<';
+  const { body, oneM } = stripOneMTag(src);
+  assert.equal(oneM, false);
+  assert.equal(body, src);
+});
+
+test('stripOneMTag tolerates a body with no model field', () => {
+  const src = JSON.stringify({ messages: [{ role: 'user', content: 'x' }] });
+  const { body, oneM } = stripOneMTag(src);
+  assert.equal(oneM, false);
+  assert.equal(body, src);
+});
+
+test('addOneMBeta adds the 1M flag to an empty header set', () => {
+  const h = {};
+  addOneMBeta(h);
+  assert.equal(h['anthropic-beta'], ONE_M_BETA);
+});
+
+test('addOneMBeta merges with existing flags and never duplicates', () => {
+  const h = { 'anthropic-beta': 'oauth-2025-04-20' };
+  addOneMBeta(h);
+  assert.deepEqual(h['anthropic-beta'].split(',').map((s) => s.trim()).sort(), [
+    ONE_M_BETA,
+    'oauth-2025-04-20',
+  ].sort());
+  addOneMBeta(h); // idempotent
+  const flags = h['anthropic-beta'].split(',').map((s) => s.trim());
+  assert.equal(flags.filter((f) => f === ONE_M_BETA).length, 1);
 });
