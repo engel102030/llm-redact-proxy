@@ -311,7 +311,15 @@ test('SseDecoder: frames split across chunks, CRLF, [DONE], comments, a final fr
   assert.deepEqual(all, [{ a: 1 }, { b: 2 }, { c: 3 }]);
   assert.deepEqual(new SseDecoder().flush(), []);
   assert.throws(() => new SseDecoder().push('data: not-json\n\n'), /not valid JSON/);
-  assert.throws(() => new SseDecoder().push(`data: {"x":"${'y'.repeat(1024 * 1024 + 16)}`), /size limit/);
+  // a tool-call done frame repeats the full arguments: multi-megabyte frames must pass
+  // (arrives in chunks, like a real stream - the partial frame sits in the buffer)
+  const bigFrame = `data: {"x":"${'y'.repeat(2 * 1024 * 1024)}"}\n\n`;
+  const chunked = new SseDecoder();
+  const first = chunked.push(bigFrame.slice(0, 1536 * 1024));
+  assert.deepEqual(first, []);
+  const big = chunked.push(bigFrame.slice(1536 * 1024));
+  assert.equal(big[0].x.length, 2 * 1024 * 1024);
+  assert.throws(() => new SseDecoder().push(`data: {"x":"${'y'.repeat(8 * 1024 * 1024 + 16)}`), /size limit/);
 });
 
 test('serializeSse and errorSse produce Anthropic SSE frames', () => {

@@ -206,6 +206,10 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
 
   // ---- Codex (ChatGPT subscription) provider ----
   const codexNow = codexDeps.now ?? Date.now;
+  // One refresh in flight per provider: parallel requests near expiry (Claude
+  // Code fires side calls) would otherwise race with the same refresh token
+  // and the losers would report a spurious "log in again".
+  let codexRefreshing = null; // { id, promise }
 
   // What the upstream handler needs from the ACTIVE provider, or null when it
   // is not codex-oauth. credentials() refreshes proactively (5 min skew);
@@ -216,7 +220,7 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
     const p = regActive(registry);
     if (!p || p.auth !== 'codex-oauth') return null;
     const current = () => registry.providers[id]?.codex?.tokens ?? null;
-    const refresh = async () => {
+    const doRefresh = async () => {
       const t = current();
       if (!t || !t.refresh) return null;
       const next = await refreshTokens({ refreshToken: t.refresh, request: codexDeps.request });
@@ -228,6 +232,14 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
       persistRegistry();
       const fresh = current();
       return fresh ? { access: fresh.access, accountId: fresh.accountId } : null;
+    };
+    const refresh = () => {
+      if (codexRefreshing && codexRefreshing.id === id) return codexRefreshing.promise;
+      const promise = doRefresh().finally(() => {
+        if (codexRefreshing && codexRefreshing.promise === promise) codexRefreshing = null;
+      });
+      codexRefreshing = { id, promise };
+      return promise;
     };
     return {
       profile: () => ({ models: registry.providers[id]?.codex?.models ?? null, effortMap: registry.providers[id]?.effortMap ?? null }),

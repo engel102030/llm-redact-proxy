@@ -237,7 +237,9 @@ export function anthropicToCodex(req, { models = null, effortMap = DEFAULT_EFFOR
 // Response side
 // ---------------------------------------------------------------------------
 
-export const MAX_SSE_FRAME_BYTES = 1024 * 1024;
+// A tool-call done frame repeats the FULL arguments string (a large Write is
+// megabytes), so the cap on an incomplete frame matches the buffered-response cap.
+export const MAX_SSE_FRAME_BYTES = 8 * 1024 * 1024;
 
 // Incremental SSE decoder: bytes -> the parsed `data:` JSON of each complete
 // frame. Frames end at a blank line (LF or CRLF); `[DONE]` and frames without

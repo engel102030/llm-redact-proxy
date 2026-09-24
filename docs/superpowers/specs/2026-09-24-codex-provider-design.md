@@ -96,7 +96,8 @@ runtime).
 - When auth `codex-oauth` is selected the key field is hidden; the form
   shows a **Login with ChatGPT** button, a status line (email, plan, token
   validity, model count) and **Logout**.
-- `POST /__redact/providers/<id>/codex/login` (panel CSRF guard): generates
+- `POST /__redact/providers/codex/login` with body `{ id }` (panel CSRF guard;
+  same shape as the existing activate/delete routes): generates
   `state` + PKCE verifier/challenge, starts a one-shot HTTP listener on
   `127.0.0.1:1455` (fixed by OpenAI's registered redirect URI; 5 minute
   timeout; `409` if the port is busy, e.g. the Codex app is mid-login),
@@ -108,7 +109,7 @@ runtime).
   as <email>, you can close this tab", then closes the listener.
   Any failure answers an HTML error and closes the listener; nothing is
   stored.
-- `POST /__redact/providers/<id>/codex/logout` clears `codex.tokens`,
+- `POST /__redact/providers/codex/logout` with body `{ id }` clears `codex.tokens`,
   `codex.account` and `codex.models`.
 - Refresh: proactively when `expiresAt - 5 min <= now`, and once on a
   backend `401` (replay the request with the new token). Rotated tokens are
@@ -133,6 +134,9 @@ runtime).
   - `thinking` with a non-empty `signature` → `{type:"reasoning",
     summary: text ? [{type:"summary_text", text}] : [], encrypted_content: signature}`
   - `thinking` without signature, `redacted_thinking` → dropped.
+  - a message with `role: "system"` (Claude Code sends its system prompt this
+    way when the model id is not a Claude model) → `{type:"message",
+    role:"developer", ...}`; the backend rejects role `system` (verified).
 - `tools`: only entries with `input_schema` (function tools) →
   `{type:"function", name, description, parameters: input_schema, strict:false}`.
   `defer_loading` is removed (all tools are sent). Server tools (entries

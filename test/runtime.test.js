@@ -237,3 +237,23 @@ test('codexLogin starts the listener and stores the result; codexLogout wipes it
   rt.upsertProvider('plain', { auth: 'replace', key: 'k', url: 'https://x.y' });
   await assert.rejects(rt.codexLogin('plain'), /codex-oauth/);
 });
+
+test('concurrent credentials() calls near expiry share one in-flight refresh', async () => {
+  const config = codexConfig({ active: 'codex', providers: { codex: { auth: 'codex-oauth', codex: login(NOW / 1000 - 10) } } });
+  let calls = 0;
+  const request = async () => {
+    calls += 1;
+    await new Promise((r) => setTimeout(r, 20));
+    return { status: 200, body: JSON.stringify({ access_token: fakeAccessToken({ accountId: 'acc-1', expSec: NOW / 1000 + 7200 }), refresh_token: 'R-once' }) };
+  };
+  const rt = createRuntime({ config, secrets: [], codexDeps: { request, now: () => NOW } });
+  const a = rt.codexAdapter();
+  const [c1, c2, c3] = await Promise.all([a.credentials(), a.credentials(), rt.codexAdapter().refresh()]);
+  assert.equal(calls, 1, 'one refresh for all concurrent callers');
+  assert.equal(c1.accountId, 'acc-1');
+  assert.deepEqual(c1, c2);
+  assert.deepEqual(c1, c3);
+  // the shared refresh is over: a later forced refresh is a new call
+  await rt.codexAdapter().refresh();
+  assert.equal(calls, 2);
+});
