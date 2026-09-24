@@ -127,12 +127,12 @@ test('host guard: chatgpt.com and its subdomains, loopback for tests, nothing el
 });
 
 test('request headers carry the exact backend contract', () => {
-  const h = codexRequestHeaders({ access: 'TOK', accountId: 'acc-1', sessionId: 'sess', clientVersion: '0.145.0' });
+  const h = codexRequestHeaders({ access: 'TOK', accountId: 'acc-1', sessionId: 'sess' });
   assert.equal(h.authorization, 'Bearer TOK');
   assert.equal(h['chatgpt-account-id'], 'acc-1');
   assert.equal(h['openai-beta'], 'responses=experimental');
   assert.equal(h.originator, 'codex_cli_rs');
-  assert.match(h['user-agent'], /^codex_cli_rs\/0\.145\.0 \(.+; .+\) unknown$/);
+  assert.match(h['user-agent'], /^codex_cli_rs\/0\.156\.1 \(.+; .+\) unknown$/);
   assert.equal(h.accept, 'text/event-stream');
   assert.equal(h['content-type'], 'application/json');
   assert.equal(h.session_id, 'sess');
@@ -156,7 +156,8 @@ test('fetchCodexModels normalizes the backend list; any failure yields null', as
     { slug: 'gpt-5.5', displayName: 'GPT-5.5', visibility: 'list', defaultLevel: 'medium', levels: ['low', 'medium'] },
     { slug: 'gpt-reserve', displayName: 'gpt-reserve', visibility: 'hide', defaultLevel: null, levels: ['low'] },
   ]);
-  assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.145.0');
+  // the backend gates new models by client version: the announced version must track the current Codex CLI
+  assert.equal(calls[0].url, 'https://chatgpt.com/backend-api/codex/models?client_version=0.156.1');
   assert.equal(calls[0].opts.method, 'GET');
   assert.equal(calls[0].opts.headers.authorization, 'Bearer TOK');
   assert.equal(calls[0].opts.headers['chatgpt-account-id'], 'acc-1');

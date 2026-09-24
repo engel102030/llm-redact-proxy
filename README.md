@@ -190,6 +190,10 @@ Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
    Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
    `providers.json` to change it).
 
+The proxy announces itself as Codex CLI `0.156.1` (`CODEX_CLIENT_VERSION` to
+override): the backend hides newer models from older client versions, so bump
+it when a new GPT generation does not show up in **fetch models**.
+
 One provider per ChatGPT account; switch with **activate**. Redaction runs on
 the Anthropic body before translation, exactly as for every other provider,
 and the token only ever goes to chatgpt.com. Reasoning summaries come back as

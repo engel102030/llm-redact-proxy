@@ -313,7 +313,7 @@ test('/v1/models and count_tokens are answered locally, never touching the upstr
   const proxy2 = await boot('http://127.0.0.1:9', fakeAdapter({ models: null }));
   try {
     const models = await (await fetch(`${proxy2.url}/v1/models`)).json();
-    assert.deepEqual(models.data.map((m) => m.id), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']);
+    assert.deepEqual(models.data.map((m) => m.id), ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5']);
   } finally {
     await proxy2.close();
   }

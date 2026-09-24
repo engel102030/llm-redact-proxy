@@ -17,8 +17,11 @@ export const CODEX_SCOPE = 'openid profile email offline_access';
 export const CODEX_DEFAULT_BASE_URL = 'https://chatgpt.com/backend-api/codex';
 export const CODEX_HOST = 'chatgpt.com';
 export const CODEX_ORIGINATOR = 'codex_cli_rs';
-// Version the backend currently accepts; override with CODEX_CLIENT_VERSION.
-export const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || '0.145.0';
+// The Codex CLI version the proxy announces (User-Agent + models?client_version).
+// The backend gates NEW models by this value (GPT-6 is hidden from 0.145.0 and
+// served to 0.156.1), so it must track the current Codex CLI release. Override
+// with CODEX_CLIENT_VERSION when a newer model needs a newer version.
+export const CODEX_CLIENT_VERSION = process.env.CODEX_CLIENT_VERSION || '0.156.1';
 export const REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 const b64url = (buf) => Buffer.from(buf).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');

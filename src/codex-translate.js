@@ -17,8 +17,11 @@ export const DEFAULT_EFFORT_MAP = Object.freeze({ low: 'low', medium: 'medium', 
 export const DEFAULT_INSTRUCTIONS = 'You are a helpful coding assistant.';
 
 // Fallback when a provider has no fetched model list (visibility "list" only).
-// Levels as served by GET /backend-api/codex/models on 2026-09-24.
+// Levels as served by GET /backend-api/codex/models on 2026-09-24 (client 0.156.1).
 export const CODEX_DEFAULT_MODELS = [
+  { slug: 'gpt-6-astra', displayName: 'GPT-6-Astra', visibility: 'list', defaultLevel: null, levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+  { slug: 'gpt-6-sol', displayName: 'GPT-6-Sol', visibility: 'list', defaultLevel: null, levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+  { slug: 'gpt-6-luna', displayName: 'GPT-6-Luna', visibility: 'list', defaultLevel: null, levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
   { slug: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', visibility: 'list', defaultLevel: 'low', levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
   { slug: 'gpt-5.6-terra', displayName: 'GPT-5.6-Terra', visibility: 'list', defaultLevel: 'medium', levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
   { slug: 'gpt-5.6-luna', displayName: 'GPT-5.6-Luna', visibility: 'list', defaultLevel: 'medium', levels: ['low', 'medium', 'high', 'xhigh', 'max'] },
