@@ -18,7 +18,7 @@ import {
   setCodexAuth,
   clearCodexAuth,
 } from './providers.js';
-import { isCodexHost, isLoopbackHost, refreshTokens, accountFromTokens, tokensFresh } from './codex-auth.js';
+import { isCodexHost, isLoopbackHost, refreshTokens, accountFromTokens, tokensFresh, fetchCodexModels } from './codex-auth.js';
 import { startCodexLogin } from './codex-login.js';
 
 export function createRuntime({ config, secrets = [], codexDeps = {} }) {
@@ -215,9 +215,8 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
   // is not codex-oauth. credentials() refreshes proactively (5 min skew);
   // refresh() is the forced path after a backend 401. Rotated tokens are
   // persisted so the next boot starts from them.
-  function codexAdapter() {
-    const id = registry.active;
-    const p = regActive(registry);
+  function codexAdapterFor(id) {
+    const p = registry.providers[id] ?? null;
     if (!p || p.auth !== 'codex-oauth') return null;
     const current = () => registry.providers[id]?.codex?.tokens ?? null;
     const doRefresh = async () => {
@@ -251,6 +250,34 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
       },
       refresh,
     };
+  }
+  function codexAdapter() {
+    return registry.active ? codexAdapterFor(registry.active) : null;
+  }
+
+  // Re-fetch a codex-oauth provider's model list with its stored login (the
+  // dashboard "fetch models" button). Persists the list; returns the listed
+  // slugs. Throws a plain Error the dashboard turns into a 400/502.
+  async function codexFetchModels(id) {
+    const p = registry.providers[id];
+    if (!p) throw new Error(`unknown provider "${id}"`);
+    const adapter = codexAdapterFor(id);
+    if (!adapter) throw new Error('provider auth must be codex-oauth');
+    const creds = await adapter.credentials();
+    if (!creds) {
+      const err = new Error('log in with ChatGPT first (edit the provider, then Login with ChatGPT)');
+      err.code = 'NOT_LOGGED_IN';
+      throw err;
+    }
+    const models = await (codexDeps.fetchModels ?? fetchCodexModels)({ baseUrl: p.url, access: creds.access, accountId: creds.accountId, request: codexDeps.request });
+    if (!models) {
+      const err = new Error('the Codex backend did not return a model list');
+      err.code = 'UPSTREAM';
+      throw err;
+    }
+    setCodexAuth(registry, id, { models, fetchedAt: codexNow() });
+    persistRegistry();
+    return models.filter((m) => m.visibility === 'list').map((m) => m.slug);
   }
 
   // Start a ChatGPT login for a codex-oauth provider: resolves with the URL
@@ -312,6 +339,7 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
     activateProvider,
     resolveModel,
     codexAdapter,
+    codexFetchModels,
     codexLogin,
     codexLogout,
     get activeHeaders() {

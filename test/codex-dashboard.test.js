@@ -123,3 +123,41 @@ test('the panel HTML carries the codex-oauth option and the login controls', asy
     await app.close();
   }
 });
+
+test('fetch models on a codex-oauth provider uses the ChatGPT login, never the Anthropic /v1/models path', async () => {
+  let fetches = 0;
+  const app = await boot({
+    fetchModels: async ({ access, accountId }) => {
+      fetches += 1;
+      assert.ok(access);
+      assert.equal(accountId, 'acc-5');
+      return [
+        { slug: 'gpt-5.5', displayName: 'GPT-5.5', visibility: 'list', defaultLevel: 'medium', levels: ['low'] },
+        { slug: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', visibility: 'list', defaultLevel: 'low', levels: ['low', 'xhigh'] },
+        { slug: 'gpt-reserve', displayName: 'Reserve', visibility: 'hide', defaultLevel: 'medium', levels: ['low'] },
+      ];
+    },
+  });
+  try {
+    await fetch(`${app.url}/__redact/providers`, { method: 'POST', headers: panel, body: JSON.stringify({ id: 'codex', auth: 'codex-oauth', url: '' }) });
+    // not logged in: a clear 400, no network
+    const before = await fetch(`${app.url}/__redact/provider/models?id=codex`, { headers: { 'x-redact-panel': '1' } });
+    assert.equal(before.status, 400);
+    assert.match((await before.json()).error, /log in/i);
+    assert.equal(fetches, 0);
+
+    const d = await (await fetch(`${app.url}/__redact/providers/codex/login`, { method: 'POST', headers: panel, body: JSON.stringify({ id: 'codex' }) })).json();
+    const state = new URL(d.url).searchParams.get('state');
+    await fetch(`http://127.0.0.1:${d.port}/auth/callback?code=abc&state=${encodeURIComponent(state)}`);
+    assert.equal(fetches, 1); // the login fetched the list once
+
+    const after = await (await fetch(`${app.url}/__redact/provider/models?id=codex`, { headers: { 'x-redact-panel': '1' } })).json();
+    assert.equal(after.ok, true);
+    assert.deepEqual(after.models, ['gpt-5.5', 'gpt-5.6-sol']); // listed only, hidden excluded
+    assert.equal(fetches, 2); // re-fetched with the stored token
+    const reg = await (await fetch(`${app.url}/__redact/providers`)).json();
+    assert.deepEqual(reg.providers.find((x) => x.id === 'codex').codex.models, ['gpt-5.5', 'gpt-5.6-sol']);
+  } finally {
+    await app.close();
+  }
+});

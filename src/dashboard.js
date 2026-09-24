@@ -174,6 +174,15 @@ export function handleDashboard(req, res, stats, meta = {}, controller = null) {
     const id = new URL(req.url ?? '', 'http://x').searchParams.get('id');
     const p = controller.providerFor(id);
     if (!p) return json(404, { error: 'unknown provider' });
+    // A ChatGPT login has no /v1/models: the list comes from the Codex
+    // backend with the stored token (and is persisted on the provider).
+    if (p.auth === 'codex-oauth' && controller.codexFetchModels) {
+      controller
+        .codexFetchModels(id)
+        .then((models) => json(200, { ok: true, status: 200, models }))
+        .catch((e) => json(e.code === 'NOT_LOGGED_IN' ? 400 : 502, { ok: false, status: e.code === 'NOT_LOGGED_IN' ? 400 : 502, error: e.message }));
+      return;
+    }
     fetchProviderModels(p)
       .then((r) => json(r.ok ? 200 : 502, r))
       .catch((e) => json(502, { ok: false, error: String(e) }));
@@ -701,7 +710,10 @@ function openEditor(id){
   $('p_key').value='';$('p_key').placeholder=(p&&p.hasKey)?'(key set \\u2014 blank keeps it)':'blank keeps current';
   $('p_ua').value=(p&&p.headers)?(p.headers['user-agent']||''):'';
   renderAliases(p?p.aliases:{});
-  $('modeldl').innerHTML='';$('fetchmsg').textContent='';$('provmsg').textContent='';
+  // a ChatGPT login already carries the plan's model list: prefill the alias dropdowns
+  const known=(p&&p.codex&&p.codex.models)||[];
+  $('modeldl').innerHTML=known.map(m=>'<option value="'+esc(m)+'">').join('');
+  $('fetchmsg').textContent=known.length?known.length+' models from the ChatGPT login':'';$('provmsg').textContent='';
   syncCodexBox();
   $('proveditor').classList.remove('hidec');
   $('proveditor').scrollIntoView({behavior:'smooth',block:'nearest'});
