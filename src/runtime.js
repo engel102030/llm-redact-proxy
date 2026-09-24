@@ -15,9 +15,13 @@ import {
   activeProvider as regActive,
   resolveModel as regResolveModel,
   publicRegistry,
+  setCodexAuth,
+  clearCodexAuth,
 } from './providers.js';
+import { isCodexHost, isLoopbackHost, refreshTokens, accountFromTokens, tokensFresh } from './codex-auth.js';
+import { startCodexLogin } from './codex-login.js';
 
-export function createRuntime({ config, secrets = [] }) {
+export function createRuntime({ config, secrets = [], codexDeps = {} }) {
   let mode = config.redactMode;
   let currentSecrets = secrets;
   // OPT-IN response rehydration: substitute {{NAME}} back to the real value on
@@ -60,8 +64,8 @@ export function createRuntime({ config, secrets = [] }) {
       }
     }
     if (patch.upstreamAuth !== undefined) {
-      if (!['passthrough', 'replace', 'oauth'].includes(patch.upstreamAuth)) {
-        throw new Error('upstreamAuth must be passthrough, replace or oauth');
+      if (!['passthrough', 'replace', 'oauth', 'codex-oauth'].includes(patch.upstreamAuth)) {
+        throw new Error('upstreamAuth must be passthrough, replace, oauth or codex-oauth');
       }
       upstream.auth = patch.upstreamAuth;
     }
@@ -88,6 +92,16 @@ export function createRuntime({ config, secrets = [] }) {
     // API. Refuse to configure it against any other host.
     if (upstream.auth === 'oauth' && upstream.url && !isAnthropicHost(upstream.url)) {
       throw new Error('upstreamAuth=oauth is only allowed with an *.anthropic.com provider');
+    }
+    // Same rule for a ChatGPT login: only the Codex backend host (or a
+    // loopback process on this machine, which is inside the trust boundary).
+    if (
+      upstream.auth === 'codex-oauth' &&
+      upstream.url &&
+      !isCodexHost(upstream.url) &&
+      !isLoopbackHost(upstream.url)
+    ) {
+      throw new Error('upstreamAuth=codex-oauth is only allowed with chatgpt.com');
     }
     if (persist) saveSettings(config.configFile, snapshot());
   }
@@ -190,6 +204,71 @@ export function createRuntime({ config, secrets = [] }) {
     return regResolveModel({ aliases: activeAliases }, model);
   }
 
+  // ---- Codex (ChatGPT subscription) provider ----
+  const codexNow = codexDeps.now ?? Date.now;
+
+  // What the upstream handler needs from the ACTIVE provider, or null when it
+  // is not codex-oauth. credentials() refreshes proactively (5 min skew);
+  // refresh() is the forced path after a backend 401. Rotated tokens are
+  // persisted so the next boot starts from them.
+  function codexAdapter() {
+    const id = registry.active;
+    const p = regActive(registry);
+    if (!p || p.auth !== 'codex-oauth') return null;
+    const current = () => registry.providers[id]?.codex?.tokens ?? null;
+    const refresh = async () => {
+      const t = current();
+      if (!t || !t.refresh) return null;
+      const next = await refreshTokens({ refreshToken: t.refresh, request: codexDeps.request });
+      if (!next) return null;
+      const account = accountFromTokens(next);
+      setCodexAuth(registry, id, {
+        tokens: { access: next.access, refresh: next.refresh, idToken: next.idToken, accountId: account.accountId ?? t.accountId, expiresAt: account.expiresAt },
+      });
+      persistRegistry();
+      const fresh = current();
+      return fresh ? { access: fresh.access, accountId: fresh.accountId } : null;
+    };
+    return {
+      profile: () => ({ models: registry.providers[id]?.codex?.models ?? null, effortMap: registry.providers[id]?.effortMap ?? null }),
+      credentials: async () => {
+        const t = current();
+        if (!t || !t.access) return null;
+        if (tokensFresh(t, codexNow())) return { access: t.access, accountId: t.accountId };
+        return refresh();
+      },
+      refresh,
+    };
+  }
+
+  // Start a ChatGPT login for a codex-oauth provider: resolves with the URL
+  // the panel opens. The callback listener stores the result in the registry.
+  async function codexLogin(id) {
+    const p = registry.providers[id];
+    if (!p) throw new Error(`unknown provider "${id}"`);
+    if (p.auth !== 'codex-oauth') throw new Error('provider auth must be codex-oauth to log in');
+    const { url, port } = await startCodexLogin({
+      port: codexDeps.port,
+      timeoutMs: codexDeps.loginTimeoutMs,
+      baseUrl: p.url,
+      exchange: codexDeps.exchange,
+      fetchModels: codexDeps.fetchModels,
+      request: codexDeps.request,
+      nowMs: codexNow,
+      onResult: (r) => {
+        setCodexAuth(registry, id, r);
+        persistRegistry();
+      },
+    });
+    return { url, port };
+  }
+
+  function codexLogout(id) {
+    clearCodexAuth(registry, id);
+    persistRegistry();
+    return publicRegistry(registry);
+  }
+
   try {
     syncActiveProvider();
   } catch (err) {
@@ -220,6 +299,9 @@ export function createRuntime({ config, secrets = [] }) {
     removeProvider,
     activateProvider,
     resolveModel,
+    codexAdapter,
+    codexLogin,
+    codexLogout,
     get activeHeaders() {
       return activeHeaders;
     },
