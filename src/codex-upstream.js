@@ -119,7 +119,8 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
     return;
   }
 
-  const translate = () => anthropicToCodex(JSON.parse(bodyText), { models, effortMap: profile.effortMap ?? undefined });
+  const translateOptions = { models, effortMap: profile.effortMap ?? undefined, prune: profile.prune ?? undefined };
+  const translate = () => anthropicToCodex(JSON.parse(bodyText), translateOptions);
 
   // No count endpoint upstream: a deterministic local estimate.
   if (req.method === 'POST' && pathname.endsWith('/count_tokens')) {
@@ -140,7 +141,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   let translated;
   try {
     parsed = JSON.parse(bodyText);
-    translated = anthropicToCodex(parsed, { models, effortMap: profile.effortMap ?? undefined });
+    translated = anthropicToCodex(parsed, translateOptions);
   } catch (err) {
     // Fail closed: an untranslatable body is never forwarded raw.
     sendJson(400, { error: { type: 'invalid_request_error', message: `codex translation failed: ${err.message}` } });

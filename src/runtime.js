@@ -241,7 +241,7 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
       return promise;
     };
     return {
-      profile: () => ({ models: registry.providers[id]?.codex?.models ?? null, effortMap: registry.providers[id]?.effortMap ?? null }),
+      profile: () => ({ models: registry.providers[id]?.codex?.models ?? null, effortMap: registry.providers[id]?.effortMap ?? null, prune: registry.providers[id]?.prune ?? null }),
       credentials: async () => {
         const t = current();
         if (!t || !t.access) return null;

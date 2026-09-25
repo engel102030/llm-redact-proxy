@@ -30,6 +30,70 @@ export const CODEX_DEFAULT_MODELS = [
 
 const LEVEL_ORDER = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 
+// Proxy-side context pruning. The Codex backend has no equivalent of
+// Anthropic's clear_tool_uses edit and Claude Code never prunes on its own,
+// so on long sessions every tool call re-sends hundreds of kilotokens of
+// stale tool output (measured: 37-59% of a request) plus the encrypted
+// reasoning of every past turn (~13%). Pruning only changes what the model
+// sees; the client's own transcript is untouched.
+//   enabled            master switch
+//   triggerTokens      prune only when the request exceeds this (estimate)
+//   keepToolUses       the N most recent tool results are never cleared
+//   clearAtLeastTokens clear oldest-first until trigger - this, so the
+//                      prefix stays cache-stable for many turns afterwards
+//   reasoning          "turn": replay only the current tool loop's reasoning;
+//                      "all": replay every turn's
+export const DEFAULT_PRUNE = Object.freeze({ enabled: true, triggerTokens: 120000, keepToolUses: 8, clearAtLeastTokens: 40000, reasoning: 'turn' });
+export const TOOL_RESULT_CLEARED = '[tool result cleared to save context]';
+
+function itemTokens(item) {
+  return Math.ceil(Buffer.byteLength(JSON.stringify(item), 'utf8') / 4);
+}
+
+// Keep only the reasoning items after the last user message (the current
+// tool loop); older turns' encrypted reasoning is dropped.
+function scopeReasoningToTurn(input) {
+  let lastUser = -1;
+  for (let i = 0; i < input.length; i += 1) {
+    if (input[i].type === 'message' && input[i].role === 'user') lastUser = i;
+  }
+  return input.filter((item, i) => item.type !== 'reasoning' || i > lastUser);
+}
+
+// Oldest-first clearing of function_call_output items (never the last
+// keepToolUses), until the estimate drops to trigger - clearAtLeast.
+// Deterministic on the history, so consecutive requests clear the same
+// items and the cached prefix only moves when a new batch is cleared.
+function clearOldToolResults(input, prune, baseTokens) {
+  const positions = [];
+  for (let i = 0; i < input.length; i += 1) if (input[i].type === 'function_call_output') positions.push(i);
+  const clearable = positions.slice(0, Math.max(0, positions.length - prune.keepToolUses));
+  let total = baseTokens;
+  for (const item of input) total += itemTokens(item);
+  if (total <= prune.triggerTokens || clearable.length === 0) return input;
+  const target = prune.triggerTokens - prune.clearAtLeastTokens;
+  const out = input.slice();
+  for (const i of clearable) {
+    if (total <= target) break;
+    if (out[i].output === TOOL_RESULT_CLEARED) continue;
+    const before = itemTokens(out[i]);
+    out[i] = { ...out[i], output: TOOL_RESULT_CLEARED };
+    total -= before - itemTokens(out[i]);
+  }
+  return out;
+}
+
+export function normalizePrune(input) {
+  const p = { ...DEFAULT_PRUNE };
+  if (!isPlainObject(input)) return p;
+  if (typeof input.enabled === 'boolean') p.enabled = input.enabled;
+  for (const k of ['triggerTokens', 'keepToolUses', 'clearAtLeastTokens']) {
+    if (Number.isFinite(input[k]) && input[k] >= 0) p[k] = Math.floor(input[k]);
+  }
+  if (input.reasoning === 'turn' || input.reasoning === 'all') p.reasoning = input.reasoning;
+  return p;
+}
+
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 
 export function findModel(models, slug) {
@@ -256,15 +320,22 @@ function mapToolChoice(choice, toolCount) {
 // `models` is the provider's fetched list (for level clamping and defaults),
 // `effortMap` the provider's Claude->Codex effort map. Throws on anything it
 // does not understand; the caller answers 400 and forwards nothing.
-export function anthropicToCodex(req, { models = null, effortMap = DEFAULT_EFFORT_MAP } = {}) {
+export function anthropicToCodex(req, { models = null, effortMap = DEFAULT_EFFORT_MAP, prune = DEFAULT_PRUNE } = {}) {
   if (!isPlainObject(req)) throw new Error('request body must be a JSON object');
   if (typeof req.model !== 'string' || !req.model) throw new Error('model is required');
   if (!Array.isArray(req.messages)) throw new Error('messages must be an array');
   const model = req.model.endsWith(ONE_M_SUFFIX) ? req.model.slice(0, -ONE_M_SUFFIX.length) : req.model;
 
-  const input = [];
+  let input = [];
   for (const message of req.messages) pushMessage(message, input);
   const tools = toolsToFunctions(req.tools);
+  const instructions = systemToInstructions(req.system);
+  const p = normalizePrune(prune);
+  if (p.enabled) {
+    if (p.reasoning === 'turn') input = scopeReasoningToTurn(input);
+    const baseTokens = Math.ceil((Buffer.byteLength(instructions, 'utf8') + Buffer.byteLength(JSON.stringify(tools), 'utf8')) / 4);
+    input = clearOldToolResults(input, p, baseTokens);
+  }
   const { choice, parallel } = mapToolChoice(req.tool_choice, tools.length);
 
   const known = findModel(models, model);
@@ -273,7 +344,7 @@ export function anthropicToCodex(req, { models = null, effortMap = DEFAULT_EFFOR
 
   const out = {
     model,
-    instructions: systemToInstructions(req.system),
+    instructions,
     input,
     tools,
     tool_choice: choice,

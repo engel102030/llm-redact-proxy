@@ -215,3 +215,16 @@ test('public view exposes login state and model slugs, never a token; round-trip
   assert.deepEqual(publicRegistry(off).providers[0].codex, { loggedIn: false, email: null, plan: null, expiresAt: null, models: [] });
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('codex-oauth providers carry a prune config with defaults, overrides and persistence', () => {
+  const p = normalizeProvider({ auth: 'codex-oauth' });
+  assert.deepEqual(p.prune, { enabled: true, triggerTokens: 120000, keepToolUses: 8, clearAtLeastTokens: 40000, reasoning: 'turn' });
+  const q = normalizeProvider({ auth: 'codex-oauth', prune: { triggerTokens: 50000, reasoning: 'all', enabled: false, bogus: 1, keepToolUses: -3 } });
+  assert.deepEqual(q.prune, { enabled: false, triggerTokens: 50000, keepToolUses: 8, clearAtLeastTokens: 40000, reasoning: 'all' });
+  assert.equal(normalizeProvider({ auth: 'replace', key: 'k', url: 'https://x.y', prune: { enabled: false } }).prune, null);
+  const reg = emptyRegistry();
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth', prune: { triggerTokens: 50000 } });
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth', label: 'renamed' }); // form re-save omits prune
+  assert.equal(reg.providers.codex.prune.triggerTokens, 50000);
+  assert.equal(publicRegistry(reg).providers[0].prune.triggerTokens, 50000);
+});

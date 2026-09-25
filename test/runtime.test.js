@@ -257,3 +257,10 @@ test('concurrent credentials() calls near expiry share one in-flight refresh', a
   await rt.codexAdapter().refresh();
   assert.equal(calls, 2);
 });
+
+test('the codex adapter profile carries the provider prune config', () => {
+  const config = codexConfig({ active: 'codex', providers: { codex: { auth: 'codex-oauth', prune: { keepToolUses: 3 } } } });
+  const rt = createRuntime({ config, secrets: [] });
+  assert.equal(rt.codexAdapter().profile().prune.keepToolUses, 3);
+  assert.equal(rt.codexAdapter().profile().prune.triggerTokens, 120000);
+});

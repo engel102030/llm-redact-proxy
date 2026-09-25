@@ -371,3 +371,25 @@ test('the message_start input estimate is calibrated per session from the previo
     await upstream.close();
   }
 });
+
+test('the active provider prune config is applied: old tool results leave as placeholders, the last ones intact', async () => {
+  const upstream = await createMockUpstream({ sse: true, sseEvents: sseFrames(TEXT_TURN), sseDelayMs: 1 });
+  const adapter = fakeAdapter();
+  adapter.profile = () => ({ models: MODELS, effortMap: null, prune: { enabled: true, triggerTokens: 2000, keepToolUses: 1, clearAtLeastTokens: 500, reasoning: 'turn' } });
+  const proxy = await boot(upstream.url, adapter);
+  try {
+    const messages = [{ role: 'user', content: 'go' }];
+    for (let n = 1; n <= 3; n += 1) {
+      messages.push({ role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: `ENC${n}` }, { type: 'tool_use', id: `call_${n}`, name: 'Read', input: { n } }] });
+      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `call_${n}`, content: 'y'.repeat(6000) }] });
+    }
+    await (await post(proxy.url, { model: 'gpt-5.5', stream: true, messages })).text();
+    const wire = JSON.parse(upstream.requests[0].body);
+    const outputs = wire.input.filter((i) => i.type === 'function_call_output').map((o) => o.output === '[tool result cleared to save context]');
+    assert.deepEqual(outputs, [true, true, false]);
+    assert.equal(wire.input.filter((i) => i.type === 'reasoning').length, 3, 'all three are in the current tool loop');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});

@@ -9,7 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { CODEX_DEFAULT_BASE_URL } from './codex-auth.js';
-import { DEFAULT_EFFORT_MAP } from './codex-translate.js';
+import { DEFAULT_EFFORT_MAP, normalizePrune } from './codex-translate.js';
 
 const AUTH = ['passthrough', 'replace', 'oauth', 'codex-oauth'];
 const EFFORT_KEYS = ['low', 'medium', 'high', 'max'];
@@ -104,6 +104,7 @@ export function normalizeProvider(input = {}) {
 
   // Codex-only state: the Claude->Codex effort map and the stored login.
   p.effortMap = auth === 'codex-oauth' ? normalizeEffortMap(input.effortMap) : null;
+  p.prune = auth === 'codex-oauth' ? normalizePrune(input.prune) : null;
   p.codex = auth === 'codex-oauth' ? normalizeCodex(input.codex) : null;
   return p;
 }
@@ -119,6 +120,7 @@ export function upsertProvider(reg, id, input) {
   // The dashboard form never carries the login or the effort map: keep them.
   if (merged.codex === undefined && existing) merged.codex = existing.codex;
   if (merged.effortMap === undefined && existing) merged.effortMap = existing.effortMap;
+  if (merged.prune === undefined && existing) merged.prune = existing.prune;
   const norm = normalizeProvider(merged);
   if (norm.auth === 'replace' && !norm.key) throw new Error('replace auth requires a key');
   reg.providers[slug] = norm;
@@ -202,6 +204,7 @@ export function publicRegistry(reg) {
       headers: p.headers,
       aliases: p.aliases,
       effortMap: p.effortMap ?? null,
+      prune: p.prune ?? null,
       // Login STATE only - never a token.
       codex:
         p.auth === 'codex-oauth'

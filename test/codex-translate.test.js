@@ -274,6 +274,75 @@ test('web search: the Anthropic server tool becomes the hosted web_search tool; 
   assert.deepEqual(anthropicToCodex({ ...base, tools: [{ type: 'tool_search_tool_regex_20251119', name: 'tool_search' }] }).tools, []);
 });
 
+// ---------------------------------------------------------------------------
+// Context pruning (proxy-side clear_tool_uses semantics + reasoning scope)
+// ---------------------------------------------------------------------------
+import { DEFAULT_PRUNE, TOOL_RESULT_CLEARED } from '../src/codex-translate.js';
+
+function toolLoop(turns, { resultChars = 4000 } = {}) {
+  // turns user messages, each followed by 3 tool calls with signed thinking
+  const messages = [];
+  let n = 0;
+  for (let t = 0; t < turns; t += 1) {
+    messages.push({ role: 'user', content: `question ${t}` });
+    for (let k = 0; k < 3; k += 1) {
+      n += 1;
+      messages.push({ role: 'assistant', content: [{ type: 'thinking', thinking: '', signature: `ENC${n}` }, { type: 'tool_use', id: `call_${n}`, name: 'Read', input: { n } }] });
+      messages.push({ role: 'user', content: [{ type: 'tool_result', tool_use_id: `call_${n}`, content: `R${n}:` + 'x'.repeat(resultChars) }] });
+    }
+  }
+  return messages;
+}
+
+test('DEFAULT_PRUNE is on with the documented values', () => {
+  assert.deepEqual(DEFAULT_PRUNE, { enabled: true, triggerTokens: 120000, keepToolUses: 8, clearAtLeastTokens: 40000, reasoning: 'turn' });
+});
+
+test('reasoning scope "turn" replays only the reasoning of the current tool loop; "all" keeps everything', () => {
+  const messages = toolLoop(2, { resultChars: 10 });
+  const turn = anthropicToCodex({ ...base, messages }, { prune: { ...DEFAULT_PRUNE, triggerTokens: 1e9 } });
+  const kept = turn.input.filter((i) => i.type === 'reasoning').map((i) => i.encrypted_content);
+  assert.deepEqual(kept, ['ENC4', 'ENC5', 'ENC6']); // turn 2 only
+  const all = anthropicToCodex({ ...base, messages }, { prune: { ...DEFAULT_PRUNE, triggerTokens: 1e9, reasoning: 'all' } });
+  assert.equal(all.input.filter((i) => i.type === 'reasoning').length, 6);
+  const off = anthropicToCodex({ ...base, messages }, { prune: { ...DEFAULT_PRUNE, enabled: false } });
+  assert.equal(off.input.filter((i) => i.type === 'reasoning').length, 6);
+});
+
+test('old tool results are cleared oldest-first once over the trigger, keeping the last N and clearing at least the batch size', () => {
+  const messages = toolLoop(3, { resultChars: 4000 }); // 9 results of ~1000 tokens each
+  const prune = { enabled: true, triggerTokens: 5000, keepToolUses: 2, clearAtLeastTokens: 1500, reasoning: 'all' };
+  const out = anthropicToCodex({ ...base, messages }, { prune });
+  const outputs = out.input.filter((i) => i.type === 'function_call_output');
+  assert.equal(outputs.length, 9);
+  const cleared = outputs.filter((o) => o.output === TOOL_RESULT_CLEARED).map((o) => o.call_id);
+  const intact = outputs.filter((o) => o.output !== TOOL_RESULT_CLEARED).map((o) => o.call_id);
+  assert.deepEqual(intact.slice(-2), ['call_8', 'call_9'], 'the last N stay intact');
+  assert.ok(cleared.length >= 4, 'clears until under trigger minus the batch');
+  assert.deepEqual(cleared, cleared.slice().sort((a, b) => Number(a.slice(5)) - Number(b.slice(5))), 'oldest first, contiguous');
+  assert.equal(cleared[0], 'call_1');
+  // the tool CALLS (inputs) are untouched
+  assert.equal(out.input.filter((i) => i.type === 'function_call' && i.arguments.includes('"n":1')).length, 1);
+  // deterministic: the same history clears the same items (cache-stable prefix)
+  const again = anthropicToCodex({ ...base, messages }, { prune });
+  assert.deepEqual(again.input, out.input);
+  // growing history keeps earlier clearings (prefix stays stable) and only adds newer ones
+  const longer = anthropicToCodex({ ...base, messages: toolLoop(4, { resultChars: 4000 }) }, { prune });
+  const clearedLonger = longer.input.filter((i) => i.type === 'function_call_output' && i.output === TOOL_RESULT_CLEARED).map((o) => o.call_id);
+  assert.deepEqual(clearedLonger.slice(0, cleared.length), cleared);
+  // under the trigger nothing is touched
+  const small = anthropicToCodex({ ...base, messages: toolLoop(1, { resultChars: 40 }) }, { prune });
+  assert.equal(small.input.filter((i) => i.type === 'function_call_output' && i.output === TOOL_RESULT_CLEARED).length, 0);
+});
+
+test('clearing never eats into the kept tail even when still over the trigger', () => {
+  const messages = toolLoop(1, { resultChars: 40000 }); // 3 huge results
+  const prune = { enabled: true, triggerTokens: 1000, keepToolUses: 2, clearAtLeastTokens: 100, reasoning: 'all' };
+  const out = anthropicToCodex({ ...base, messages }, { prune });
+  const outputs = out.input.filter((i) => i.type === 'function_call_output');
+  assert.deepEqual(outputs.map((o) => o.output === TOOL_RESULT_CLEARED), [true, false, false]);
+});
+
 test('unknown content block or malformed request throws (fail closed)', () => {
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'user', content: [{ type: 'container_upload', file_id: 'f' }] }] }), /unsupported content block type: container_upload/);
   assert.throws(() => anthropicToCodex({ ...base, messages: [{ role: 'function', content: 'x' }] }), /unsupported message role/);

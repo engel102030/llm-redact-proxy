@@ -190,6 +190,20 @@ Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
    Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
    `providers.json` to change it).
 
+**Context pruning (on by default).** The Codex backend has no equivalent of
+Anthropic's tool-result clearing, so on long sessions every tool call would
+re-send hundreds of kilotokens of stale tool output plus the encrypted
+reasoning of every past turn. The proxy prunes what the model sees (your
+transcript is untouched): once a request exceeds `triggerTokens`, the oldest
+tool results are replaced by `[tool result cleared to save context]` (the last
+`keepToolUses` stay intact, cleared in batches of `clearAtLeastTokens` so the
+prompt cache stays stable), and only the current tool loop's reasoning is
+replayed. Per provider in `providers.json`:
+
+```json
+"prune": { "enabled": true, "triggerTokens": 120000, "keepToolUses": 8, "clearAtLeastTokens": 40000, "reasoning": "turn" }
+```
+
 The proxy announces itself as Codex CLI `0.156.1` (`CODEX_CLIENT_VERSION` to
 override): the backend hides newer models from older client versions, so bump
 it when a new GPT generation does not show up in **fetch models**.
