@@ -27,6 +27,32 @@ export const CODEX_MAX_ERROR_BODY_BYTES = 16 * 1024;
 
 const MODEL_EPOCH = '1970-01-01T00:00:00Z';
 
+// Start-of-stream input estimate. bytes/4 overshoots the tokenizer by a
+// stable factor (~1.16 measured on real sessions), so the client's context
+// meter would climb during streaming and fall back at the end. Scale by the
+// real/estimate ratio observed on the previous turn of the same session
+// (keyed by prompt_cache_key); a conservative default until then.
+const DEFAULT_ESTIMATE_RATIO = 0.86;
+const CALIBRATION_KEEP = 256;
+const calibration = new Map(); // prompt_cache_key -> real tokens / bytes-4 estimate
+
+function estimateInput(translated) {
+  const raw = estimateTokens(translated);
+  const key = translated.prompt_cache_key;
+  const ratio = (key && calibration.get(key)) || DEFAULT_ESTIMATE_RATIO;
+  return Math.round(raw * ratio);
+}
+
+function calibrate(translated, realTotal) {
+  const key = translated.prompt_cache_key;
+  if (!key || !Number.isFinite(realTotal) || realTotal <= 0) return;
+  const raw = estimateTokens(translated);
+  if (!raw) return;
+  calibration.delete(key);
+  calibration.set(key, realTotal / raw);
+  while (calibration.size > CALIBRATION_KEEP) calibration.delete(calibration.keys().next().value);
+}
+
 function readCapped(stream, cap) {
   return new Promise((resolve) => {
     let acc = '';
@@ -215,7 +241,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   // 200: a Responses SSE stream (the backend sends no content-type - do not
   // depend on it). Translate as it arrives.
   const messageId = `msg_${randomUUID().replace(/-/g, '')}`;
-  const reducer = new CodexReducer({ messageId, model: parsed.model, inputEstimate: estimateTokens(translated) });
+  const reducer = new CodexReducer({ messageId, model: parsed.model, inputEstimate: estimateInput(translated) });
   const decoder = new SseDecoder();
   const rawDec = new StringDecoder('utf8');
   let respAcc = '';
@@ -228,6 +254,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
         const u = e.data.usage ?? {};
         usage.input_tokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
         usage.output_tokens = u.output_tokens ?? null;
+        calibrate(translated, usage.input_tokens);
       }
     }
   };

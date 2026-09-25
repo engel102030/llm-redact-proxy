@@ -346,3 +346,28 @@ test('session_id is stable per Claude Code session (derived from metadata.user_i
     await upstream.close();
   }
 });
+
+test('the message_start input estimate is calibrated per session from the previous turn (no meter swing)', async () => {
+  const upstream = await createMockUpstream({ sse: true, sseEvents: sseFrames(TEXT_TURN), sseDelayMs: 1 });
+  const proxy = await boot(upstream.url, fakeAdapter());
+  try {
+    const { estimateTokens } = await import('../src/codex-translate.js');
+    const startUsage = (sse) => JSON.parse(sse.split('\n').find((l) => l.startsWith('data: ') && l.includes('message_start')).slice(6)).message.usage.input_tokens;
+    const turn = async (userId, text) => startUsage(await (await post(proxy.url, { model: 'gpt-5.5', stream: true, metadata: { user_id: userId }, messages: [{ role: 'user', content: text }] })).text());
+
+    const first = await turn('cal-A', 'x'.repeat(4000));
+    const sent1 = estimateTokens(JSON.parse(upstream.requests[0].body));
+    assert.ok(first > 0 && first < sent1, 'uncalibrated: a conservative fraction of bytes/4');
+    // TEXT_TURN reports a real total of 24 tokens: the next turn of the same session scales bytes/4 by 24/sent1
+    const second = await turn('cal-A', 'x'.repeat(8000));
+    const sent2 = estimateTokens(JSON.parse(upstream.requests[1].body));
+    assert.equal(second, Math.round((sent2 * 24) / sent1));
+    // another session starts uncalibrated
+    const other = await turn('cal-B', 'x'.repeat(8000));
+    assert.notEqual(other, second);
+    assert.ok(other > second);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
