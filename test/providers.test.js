@@ -228,3 +228,15 @@ test('codex-oauth providers carry a prune config with defaults, overrides and pe
   assert.equal(reg.providers.codex.prune.triggerTokens, 50000);
   assert.equal(publicRegistry(reg).providers[0].prune.triggerTokens, 50000);
 });
+
+test('codex-oauth providers carry a transport setting: ws by default, http on request, kept on re-save', () => {
+  assert.equal(normalizeProvider({ auth: 'codex-oauth' }).transport, 'ws');
+  assert.equal(normalizeProvider({ auth: 'codex-oauth', transport: 'http' }).transport, 'http');
+  assert.equal(normalizeProvider({ auth: 'codex-oauth', transport: 'carrier-pigeon' }).transport, 'ws');
+  assert.equal(normalizeProvider({ auth: 'replace', key: 'k', url: 'https://x.y', transport: 'http' }).transport, null);
+  const reg = emptyRegistry();
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth', transport: 'http' });
+  upsertProvider(reg, 'codex', { auth: 'codex-oauth', label: 'again' });
+  assert.equal(reg.providers.codex.transport, 'http');
+  assert.equal(publicRegistry(reg).providers[0].transport, 'http');
+});

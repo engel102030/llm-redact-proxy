@@ -190,6 +190,15 @@ Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
    Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
    `providers.json` to change it).
 
+**WebSocket transport (on by default).** Like the Codex CLI, the proxy talks
+to the backend over one WebSocket per conversation (`openai-beta:
+responses_websockets`): the first turn sends everything, following turns send
+only the new items plus `previous_response_id`, so a tool call no longer
+uploads the whole transcript. Token usage is the same as a full resend (the
+backend counts the server-side context, cached); what you gain is upload and
+latency. Any refused upgrade or lost continuation falls back to plain HTTP /
+a full send automatically. `"transport": "http"` on the provider disables it.
+
 **Plan usage in the dashboard.** The backend reports the plan's rate limits on
 every response (`x-codex-*` headers: used percent of the 7-day window, reset
 time, plan type, credits). The proxy shows them on the provider row, in the

@@ -21,7 +21,7 @@ function fakeAdapter({ access = 'tok-1', accountId = 'acc-1', models = MODELS, e
   const calls = { credentials: 0, refresh: 0 };
   return {
     calls,
-    profile: () => ({ models, effortMap }),
+    profile: () => ({ models, effortMap, transport: 'http' }), // this file covers the HTTP transport
     credentials: async () => {
       calls.credentials += 1;
       return creds ? { access, accountId } : null;
@@ -273,9 +273,12 @@ test('a 200 that is not a Responses stream never becomes a finished message', as
   const bogus = await scriptedUpstream([jsonResponder(200, { ok: true })]);
   const proxy = await boot(bogus.url, fakeAdapter());
   try {
+    // a failure before any event was translated is an HTTP error (like the real
+    // API); only failures mid-stream become an SSE error event
     const streamed = await post(proxy.url, { model: 'gpt-5.5', stream: true, messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(streamed.status, 502);
     const text = await streamed.text();
-    assert.ok(text.includes('event: error'));
+    assert.match(text, /ended before response.completed/);
     assert.equal(text.includes('message_stop'), false);
     const single = await post(proxy.url, { model: 'gpt-5.5', stream: false, messages: [{ role: 'user', content: 'hi' }] });
     assert.equal(single.status, 502);
@@ -375,7 +378,7 @@ test('the message_start input estimate is calibrated per session from the previo
 test('the active provider prune config is applied: old tool results leave as placeholders, the last ones intact', async () => {
   const upstream = await createMockUpstream({ sse: true, sseEvents: sseFrames(TEXT_TURN), sseDelayMs: 1 });
   const adapter = fakeAdapter();
-  adapter.profile = () => ({ models: MODELS, effortMap: null, prune: { enabled: true, triggerTokens: 2000, keepToolUses: 1, clearAtLeastTokens: 500, reasoning: 'turn' } });
+  adapter.profile = () => ({ models: MODELS, effortMap: null, transport: 'http', prune: { enabled: true, triggerTokens: 2000, keepToolUses: 1, clearAtLeastTokens: 500, reasoning: 'turn' } });
   const proxy = await boot(upstream.url, adapter);
   try {
     const messages = [{ role: 'user', content: 'go' }];

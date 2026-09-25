@@ -105,6 +105,9 @@ export function normalizeProvider(input = {}) {
   // Codex-only state: the Claude->Codex effort map and the stored login.
   p.effortMap = auth === 'codex-oauth' ? normalizeEffortMap(input.effortMap) : null;
   p.prune = auth === 'codex-oauth' ? normalizePrune(input.prune) : null;
+  // "ws" (default): one WebSocket per conversation, following turns send only
+  // the new items; "http": plain POST per request.
+  p.transport = auth === 'codex-oauth' ? (input.transport === 'http' ? 'http' : 'ws') : null;
   p.codex = auth === 'codex-oauth' ? normalizeCodex(input.codex) : null;
   return p;
 }
@@ -121,6 +124,7 @@ export function upsertProvider(reg, id, input) {
   if (merged.codex === undefined && existing) merged.codex = existing.codex;
   if (merged.effortMap === undefined && existing) merged.effortMap = existing.effortMap;
   if (merged.prune === undefined && existing) merged.prune = existing.prune;
+  if (merged.transport === undefined && existing) merged.transport = existing.transport;
   const norm = normalizeProvider(merged);
   if (norm.auth === 'replace' && !norm.key) throw new Error('replace auth requires a key');
   reg.providers[slug] = norm;
@@ -205,6 +209,7 @@ export function publicRegistry(reg) {
       aliases: p.aliases,
       effortMap: p.effortMap ?? null,
       prune: p.prune ?? null,
+      transport: p.transport ?? null,
       // Login STATE only - never a token.
       codex:
         p.auth === 'codex-oauth'

@@ -56,14 +56,24 @@ export function parseClientFrames(buf) {
 // Starts a WS server. `onConnection(conn, upgradeReq)` gets { send(text), sendFrame(buf), close(code), socket }
 // and conn emits nothing: instead pass `onMessage(conn, text)`. Client frames are
 // delivered as { opcode, payload } to onFrame when given.
-export function startWsServer({ onConnection, onMessage, onFrame, path = '/backend-api/codex/responses', reject = null } = {}) {
+export function startWsServer({ onConnection, onMessage, onFrame, onHttp, path = '/backend-api/codex/responses', reject = null } = {}) {
   const requests = [];
+  const httpRequests = [];
+  const upgraded = new Set(); // sockets handed over to WebSocket, closed on server close
   const server = http.createServer((req, res) => {
-    res.writeHead(426, { 'content-type': 'text/plain' });
-    res.end('upgrade required');
+    const chunks = [];
+    req.on('data', (c) => chunks.push(c));
+    req.on('end', () => {
+      httpRequests.push({ method: req.method, url: req.url, headers: { ...req.headers }, body: Buffer.concat(chunks).toString('utf8') });
+      if (onHttp) return onHttp(req, res, httpRequests[httpRequests.length - 1]);
+      res.writeHead(426, { 'content-type': 'text/plain' });
+      res.end('upgrade required');
+    });
   });
   server.on('upgrade', (req, socket, head) => {
     requests.push({ url: req.url, headers: { ...req.headers } });
+    upgraded.add(socket);
+    socket.on('close', () => upgraded.delete(socket));
     if (reject) {
       socket.end(`HTTP/1.1 ${reject.status} ${reject.text ?? 'Nope'}\r\ncontent-type: text/plain\r\ncontent-length: ${Buffer.byteLength(reject.body ?? '')}\r\n\r\n${reject.body ?? ''}`);
       return;
@@ -110,7 +120,7 @@ export function startWsServer({ onConnection, onMessage, onFrame, path = '/backe
   return new Promise((resolve) => {
     server.listen(0, '127.0.0.1', () => {
       const { port } = server.address();
-      resolve({ port, url: `ws://127.0.0.1:${port}${path}`, requests, close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) });
+      resolve({ port, url: `ws://127.0.0.1:${port}${path}`, httpUrl: `http://127.0.0.1:${port}`, requests, httpRequests, close: () => new Promise((r) => { for (const s of upgraded) s.destroy(); server.closeAllConnections?.(); server.close(r); }) });
     });
   });
 }

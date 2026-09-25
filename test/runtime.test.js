@@ -275,3 +275,8 @@ test('reported plan usage shows up in the public registry view for the codex pro
   assert.equal(view.planType, 'prolite');
   assert.equal('limits' in (loadProviders(config.providersFile).providers.codex.codex ?? {}), false);
 });
+
+test('the codex adapter profile carries the provider transport', () => {
+  const config = codexConfig({ active: 'codex', providers: { codex: { auth: 'codex-oauth', transport: 'http' } } });
+  assert.equal(createRuntime({ config, secrets: [] }).codexAdapter().profile().transport, 'http');
+});
