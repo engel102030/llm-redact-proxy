@@ -190,6 +190,12 @@ Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
    Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
    `providers.json` to change it).
 
+**Plan usage in the dashboard.** The backend reports the plan's rate limits on
+every response (`x-codex-*` headers: used percent of the 7-day window, reset
+time, plan type, credits). The proxy shows them on the provider row, in the
+editor status line and as a chip for the active provider, and notes
+`quota N%` on each request's log line.
+
 **Context pruning (on by default).** The Codex backend has no equivalent of
 Anthropic's tool-result clearing, so on long sessions every tool call would
 re-send hundreds of kilotokens of stale tool output plus the encrypted

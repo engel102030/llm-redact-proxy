@@ -393,3 +393,60 @@ test('the active provider prune config is applied: old tool results leave as pla
     await upstream.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Plan usage (rate-limit headers the backend returns on every response)
+// ---------------------------------------------------------------------------
+import { parseCodexLimits } from '../src/codex-upstream.js';
+
+test('parseCodexLimits reads the x-codex-* headers into a plan-usage record', () => {
+  const limits = parseCodexLimits({
+    'x-codex-plan-type': 'prolite',
+    'x-codex-active-limit': 'premium',
+    'x-codex-primary-used-percent': '58',
+    'x-codex-primary-window-minutes': '10080',
+    'x-codex-primary-reset-after-seconds': '599769',
+    'x-codex-primary-reset-at': '1790951642',
+    'x-codex-secondary-used-percent': '0',
+    'x-codex-secondary-window-minutes': '0',
+    'x-codex-secondary-reset-at': '',
+    'x-codex-credits-has-credits': 'False',
+    'x-codex-credits-balance': '0',
+    'x-codex-credits-unlimited': 'False',
+  }, 1_700_000_000_000);
+  assert.deepEqual(limits, {
+    planType: 'prolite',
+    activeLimit: 'premium',
+    primary: { usedPercent: 58, windowMinutes: 10080, resetAt: 1790951642000 },
+    secondary: null,
+    credits: { hasCredits: false, unlimited: false, balance: '0' },
+    observedAt: 1_700_000_000_000,
+  });
+  assert.equal(parseCodexLimits({ 'content-type': 'application/json' }, 1), null);
+  const both = parseCodexLimits({ 'x-codex-primary-used-percent': '12', 'x-codex-primary-window-minutes': '10080', 'x-codex-secondary-used-percent': '80', 'x-codex-secondary-window-minutes': '300', 'x-codex-secondary-reset-at': '1790000000' }, 5);
+  assert.deepEqual(both.secondary, { usedPercent: 80, windowMinutes: 300, resetAt: 1790000000000 });
+  assert.equal(both.planType, null);
+});
+
+test('plan usage headers are reported to the adapter on every answered request and noted in the log line', async () => {
+  const limitHeaders = { 'x-codex-plan-type': 'prolite', 'x-codex-primary-used-percent': '58', 'x-codex-primary-window-minutes': '10080', 'x-codex-primary-reset-at': '1790951642' };
+  const upstream = await scriptedUpstream([sseResponder(sseFrames(TEXT_TURN), limitHeaders), jsonResponder(429, { detail: 'usage limit reached' })]);
+  const adapter = fakeAdapter();
+  const reported = [];
+  adapter.reportLimits = (l) => reported.push(l);
+  const proxy = await boot(upstream.url, adapter);
+  try {
+    await (await post(proxy.url, { model: 'gpt-5.5', stream: true, messages: [{ role: 'user', content: 'hi' }] })).text();
+    assert.equal(reported.length, 1);
+    assert.equal(reported[0].primary.usedPercent, 58);
+    assert.equal(reported[0].planType, 'prolite');
+    const s = await (await fetch(`${proxy.url}/__redact/stats.json`)).json();
+    assert.match(s.recent[0].note, /quota 58%/);
+    // a 429 without the headers reports nothing new
+    await post(proxy.url, { model: 'gpt-5.5', messages: [{ role: 'user', content: 'hi' }] });
+    assert.equal(reported.length, 1);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});

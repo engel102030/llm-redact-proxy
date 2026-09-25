@@ -596,8 +596,10 @@ function redactCell(e,caps){
   return '<span class="faint">clean</span>';
 }
 
-let lastOk=Date.now();
+let lastOk=Date.now(),tickN=0;
 async function tick(){
+  // refresh the registry view every ~10s so plan usage stays current
+  if(tickN++%7===0&&$('proveditor').classList.contains('hidec'))loadProviders();
   let d;try{d=await (await fetch('stats.json',{cache:'no-store'})).json();lastOk=Date.now();}
   catch(e){$('live').className='live stale';$('live').lastChild.textContent=' offline';return;}
   $('live').className='live';
@@ -606,7 +608,7 @@ async function tick(){
     '<span class="chip">upstream <b>'+esc(m.upstream||'not set')+'</b></span>'
     +'<span class="chip">mode <b>'+esc(m.mode||'?')+'</b></span>'
     +'<span class="chip">fail-closed <b>'+esc(m.failClosed)+'</b></span>'
-    +'<span class="chip">uptime <b>'+upt(d.uptimeSec)+'</b></span>';
+    +'<span class="chip">uptime <b>'+upt(d.uptimeSec)+'</b></span>'+quotaChip();
   $('tiles').innerHTML=tile(n(t.requests),'requests')+tile(n(t.redactedRequests),'with redactions')
     +tile(n(t.redactions),'total redactions')+tile(n(t.blocked),'blocked',t.blocked>0)
     +tile(n(t.inputTokens),'input tokens')+tile(n(t.outputTokens),'output tokens');
@@ -639,14 +641,14 @@ async function tick(){
   }).join('') : '<tr><td colspan="3" class="empty">none yet</td></tr>';
 }
 // ---------- providers registry ----------
-let curProviders=[],editingId=null;
+let curProviders=[],editingId=null,activeProviderId=null;
 const findProv=(id)=>curProviders.find(p=>p.id===id);
 async function loadProviders(){
   try{const reg=await (await fetch('providers',{cache:'no-store'})).json();renderProviders(reg);}
   catch(e){$('provlist').innerHTML='<div class="empty">registry unavailable</div>';}
 }
 function renderProviders(reg){
-  curProviders=reg.providers||[];
+  curProviders=reg.providers||[];activeProviderId=reg.active||null;
   if(!curProviders.length){$('provlist').innerHTML='<div class="empty">no providers yet \\u2014 add one below</div>';return;}
   let h='<table><thead><tr><th>id</th><th>url</th><th>auth</th><th class="num">aliases</th><th></th></tr></thead><tbody>';
   for(const p of curProviders){
@@ -654,7 +656,8 @@ function renderProviders(reg){
     h+='<tr><td><b>'+esc(p.id)+'</b>'+(active?' <span class="pill ok">active</span>':'')+(p.label?'<div class="faint mono">'+esc(p.label)+'</div>':'')+'</td>'
       +'<td class="mono faint">'+esc(trunc(p.url||'\\u2014',46))+'</td>'
       +'<td>'+esc(p.auth)+(p.hasKey?' <span class="faint">\\u00b7 key</span>':'')
-        +(p.codex&&p.codex.loggedIn?' <span class="faint">\\u00b7 '+esc(p.codex.email||'logged in')+'</span>':(p.codex?' <span class="warn">\\u00b7 not logged in</span>':''))+'</td>'
+        +(p.codex&&p.codex.loggedIn?' <span class="faint">\\u00b7 '+esc(p.codex.email||'logged in')+'</span>':(p.codex?' <span class="warn">\\u00b7 not logged in</span>':''))
+        +(p.codex&&p.codex.limits?'<div class="faint" style="margin-top:3px">'+quotaText(p.codex.limits)+'</div>':'')+'</td>'
       +'<td class="num">'+Object.keys(p.aliases||{}).length+'</td>'
       +'<td style="white-space:nowrap;text-align:right">'
         +(active?'':'<button class="linkbtn" data-act="activate" data-id="'+esc(p.id)+'">activate</button> &nbsp;')
@@ -739,7 +742,25 @@ function codexStatusText(p){
   const c=p&&p.codex;
   if(!c||!c.loggedIn)return 'not logged in';
   const until=c.expiresAt?new Date(c.expiresAt).toLocaleString():'?';
-  return (c.email||'logged in')+' \\u00b7 '+(c.plan||'?')+' \\u00b7 '+c.models.length+' models \\u00b7 token valid until '+until;
+  return (c.email||'logged in')+' \\u00b7 '+(c.plan||'?')+' \\u00b7 '+c.models.length+' models \\u00b7 token valid until '+until+(c.limits?' \\u00b7 '+quotaText(c.limits):'');
+}
+// plan usage from the backend's x-codex-* headers (updated on every request)
+function resetIn(ms){const s=Math.max(0,Math.round((ms-Date.now())/1000));const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return d?d+'d '+h+'h':h?h+'h '+m+'m':m+'m';}
+function windowText(label,w){if(!w)return '';const days=w.windowMinutes>=1440?Math.round(w.windowMinutes/1440)+'d':Math.round(w.windowMinutes/60)+'h';return label+' '+w.usedPercent+'% used of the '+days+' window ('+(100-w.usedPercent)+'% left'+(w.resetAt?', resets in '+resetIn(w.resetAt):'')+')';}
+function quotaText(l){
+  const parts=[];
+  if(l.primary)parts.push(windowText('quota',l.primary));
+  if(l.secondary)parts.push(windowText('short window',l.secondary));
+  if(l.credits&&(l.credits.hasCredits||l.credits.unlimited))parts.push('credits '+(l.credits.unlimited?'unlimited':l.credits.balance));
+  if(l.planType)parts.push('plan '+esc(l.planType));
+  return esc(parts.join(' \\u00b7 ')).replace(/&amp;/g,'&');
+}
+function quotaChip(){
+  const active=curProviders.find(p=>p.id===activeProviderId);
+  const l=active&&active.codex&&active.codex.limits;
+  if(!l||!l.primary)return '';
+  const cls=l.primary.usedPercent>=90?'err':l.primary.usedPercent>=70?'warn':'';
+  return '<span class="chip" id="quotachip">quota <b class="'+cls+'">'+l.primary.usedPercent+'%</b>'+(l.primary.resetAt?' <span class="faint">resets in '+resetIn(l.primary.resetAt)+'</span>':'')+'</span>';
 }
 function syncCodexBox(){
   const on=$('p_auth').value==='codex-oauth';

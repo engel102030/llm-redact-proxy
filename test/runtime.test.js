@@ -229,7 +229,7 @@ test('codexLogin starts the listener and stores the result; codexLogout wipes it
   const res = await fetch(`http://127.0.0.1:${port}/auth/callback?code=c&state=${encodeURIComponent(state)}`);
   assert.equal(res.status, 200);
   let pub = rt.providers().providers[0];
-  assert.deepEqual(pub.codex, { loggedIn: true, email: 'x@y.z', plan: 'plus', expiresAt: 4102444800000, models: ['gpt-5.6-sol'] });
+  assert.deepEqual(pub.codex, { loggedIn: true, email: 'x@y.z', plan: 'plus', expiresAt: 4102444800000, models: ['gpt-5.6-sol'], limits: null });
   assert.equal(loadProviders(config.providersFile).providers.codex.codex.tokens.refresh, 'R9');
   pub = rt.codexLogout('codex').providers[0];
   assert.equal(pub.codex.loggedIn, false);
@@ -263,4 +263,15 @@ test('the codex adapter profile carries the provider prune config', () => {
   const rt = createRuntime({ config, secrets: [] });
   assert.equal(rt.codexAdapter().profile().prune.keepToolUses, 3);
   assert.equal(rt.codexAdapter().profile().prune.triggerTokens, 120000);
+});
+
+test('reported plan usage shows up in the public registry view for the codex provider (not persisted)', () => {
+  const config = codexConfig({ active: 'codex', providers: { codex: { auth: 'codex-oauth', codex: login(NOW / 1000 + 3600) } } });
+  const rt = createRuntime({ config, secrets: [], codexDeps: { now: () => NOW } });
+  assert.equal(rt.providers().providers[0].codex.limits, null);
+  rt.codexAdapter().reportLimits({ planType: 'prolite', activeLimit: 'premium', primary: { usedPercent: 58, windowMinutes: 10080, resetAt: NOW + 1000 }, secondary: null, credits: null, observedAt: NOW });
+  const view = rt.providers().providers[0].codex.limits;
+  assert.equal(view.primary.usedPercent, 58);
+  assert.equal(view.planType, 'prolite');
+  assert.equal('limits' in (loadProviders(config.providersFile).providers.codex.codex ?? {}), false);
 });

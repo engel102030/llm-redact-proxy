@@ -73,6 +73,35 @@ function sessionIdFor(cacheKey) {
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
+// Plan usage the backend reports on every response (x-codex-* headers):
+// primary = the plan's main window (7 days on ChatGPT plans), secondary = a
+// shorter window when the plan has one. null when the headers are absent.
+export function parseCodexLimits(headers, nowMs = Date.now()) {
+  const h = headers ?? {};
+  const str = (k) => (typeof h[k] === 'string' && h[k] !== '' ? h[k] : null);
+  const num = (k) => (str(k) !== null && Number.isFinite(Number(h[k])) ? Number(h[k]) : null);
+  if (num('x-codex-primary-used-percent') === null) return null;
+  const window = (prefix) => {
+    const used = num(`${prefix}-used-percent`);
+    const minutes = num(`${prefix}-window-minutes`);
+    if (used === null || !minutes) return null;
+    const resetAt = num(`${prefix}-reset-at`);
+    return { usedPercent: used, windowMinutes: minutes, resetAt: resetAt ? resetAt * 1000 : null };
+  };
+  const bool = (k) => (str(k) === null ? null : /^true$/i.test(h[k]));
+  const credits = str('x-codex-credits-has-credits') === null && str('x-codex-credits-balance') === null
+    ? null
+    : { hasCredits: bool('x-codex-credits-has-credits') ?? false, unlimited: bool('x-codex-credits-unlimited') ?? false, balance: str('x-codex-credits-balance') ?? '0' };
+  return {
+    planType: str('x-codex-plan-type'),
+    activeLimit: str('x-codex-active-limit'),
+    primary: window('x-codex-primary'),
+    secondary: window('x-codex-secondary'),
+    credits,
+    observedAt: nowMs,
+  };
+}
+
 function errorDetail(text) {
   try {
     const j = JSON.parse(text);
@@ -222,6 +251,11 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   }
 
   const status = upstreamRes.statusCode ?? 0;
+  const limits = parseCodexLimits(upstreamRes.headers);
+  if (limits) {
+    if (typeof codex.reportLimits === 'function') codex.reportLimits(limits);
+    if (limits.primary) note = `${note} quota ${limits.primary.usedPercent}%`;
+  }
   if (status !== 200) {
     const text = await readCapped(upstreamRes, CODEX_MAX_ERROR_BODY_BYTES);
     stats.rememberResp(entry?.id, text);

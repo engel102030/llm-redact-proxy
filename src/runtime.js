@@ -180,19 +180,20 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
     regUpsert(registry, id, input);
     persistRegistry();
     syncActiveProvider();
-    return publicRegistry(registry);
+    return providersView();
   }
   function removeProvider(id) {
     regRemove(registry, id);
+    codexLimits.delete(id);
     persistRegistry();
     syncActiveProvider();
-    return publicRegistry(registry);
+    return providersView();
   }
   function activateProvider(id) {
     regSetActive(registry, id);
     persistRegistry();
     syncActiveProvider();
-    return publicRegistry(registry);
+    return providersView();
   }
   // Internal: the full active-provider record (holds the key + headers) for
   // server-side use only, e.g. the dashboard fetching a provider's model list.
@@ -210,6 +211,18 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
   // Code fires side calls) would otherwise race with the same refresh token
   // and the losers would report a spurious "log in again".
   let codexRefreshing = null; // { id, promise }
+  // Last plan usage the backend reported per codex provider. Memory only: it
+  // changes on every request and is not worth a file write.
+  const codexLimits = new Map(); // provider id -> parsed x-codex-* limits
+
+  // Public registry view plus the ephemeral plan usage.
+  function providersView() {
+    const view = publicRegistry(registry);
+    for (const p of view.providers) {
+      if (p.codex) p.codex.limits = codexLimits.get(p.id) ?? null;
+    }
+    return view;
+  }
 
   // What the upstream handler needs from the ACTIVE provider, or null when it
   // is not codex-oauth. credentials() refreshes proactively (5 min skew);
@@ -249,6 +262,9 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
         return refresh();
       },
       refresh,
+      reportLimits: (limits) => {
+        if (limits && typeof limits === 'object') codexLimits.set(id, limits);
+      },
     };
   }
   function codexAdapter() {
@@ -304,8 +320,9 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
 
   function codexLogout(id) {
     clearCodexAuth(registry, id);
+    codexLimits.delete(id);
     persistRegistry();
-    return publicRegistry(registry);
+    return providersView();
   }
 
   try {
@@ -332,7 +349,7 @@ export function createRuntime({ config, secrets = [], codexDeps = {} }) {
       return showRedactedValues;
     },
     // provider registry
-    providers: () => publicRegistry(registry),
+    providers: providersView,
     providerFor,
     upsertProvider,
     removeProvider,

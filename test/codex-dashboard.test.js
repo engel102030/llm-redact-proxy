@@ -68,7 +68,7 @@ test('create a codex-oauth provider from the form, log in through the route, log
     let p = d.registry.providers.find((x) => x.id === 'codex');
     assert.equal(p.url, 'https://chatgpt.com/backend-api/codex');
     assert.equal(p.auth, 'codex-oauth');
-    assert.deepEqual(p.codex, { loggedIn: false, email: null, plan: null, expiresAt: null, models: [] });
+    assert.deepEqual(p.codex, { loggedIn: false, email: null, plan: null, expiresAt: null, models: [], limits: null });
     assert.equal(app.runtime.upstream.auth, 'codex-oauth'); // first provider becomes active
 
     const noCsrf = await fetch(`${app.url}/__redact/providers/codex/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: 'codex' }) });
@@ -90,7 +90,7 @@ test('create a codex-oauth provider from the form, log in through the route, log
 
     const reg = await (await fetch(`${app.url}/__redact/providers`)).json();
     p = reg.providers.find((x) => x.id === 'codex');
-    assert.deepEqual(p.codex, { loggedIn: true, email: 'dash@example.com', plan: 'plus', expiresAt: 4102444800000, models: ['gpt-5.5'] });
+    assert.deepEqual(p.codex, { loggedIn: true, email: 'dash@example.com', plan: 'plus', expiresAt: 4102444800000, models: ['gpt-5.5'], limits: null });
     const text = JSON.stringify(reg);
     assert.equal(text.includes('R5'), false);
     assert.equal(text.includes(fakeAccessToken({ accountId: 'acc-5' })), false);
@@ -119,6 +119,7 @@ test('the panel HTML carries the codex-oauth option and the login controls', asy
     assert.ok(html.includes('id="codexstatus"'));
     assert.ok((html.match(/value="codex-oauth"/g) ?? []).length >= 2); // top form + editor
     assert.ok(html.includes("providers/codex/login"));
+    assert.ok(html.includes("quotachip") && html.includes("function quotaText"), "plan usage rendering present");
   } finally {
     await app.close();
   }
