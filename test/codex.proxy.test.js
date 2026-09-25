@@ -137,8 +137,14 @@ test('the inspector keeps the TRANSLATED body (what actually left)', async () =>
     assert.ok(JSON.parse(d.req).input, 'stored request is the Responses body');
     assert.ok(d.resp.includes('response.completed'), 'raw upstream SSE captured');
     assert.equal(s.recent[0].status, 200);
-    assert.equal(s.recent[0].inputTokens, 24);
+    assert.equal(s.recent[0].inputTokens, 24); // dashboard shows the TOTAL input (uncached + cached)
     assert.equal(s.recent[0].outputTokens, 18);
+    // the client sees Anthropic semantics and a non-zero estimate up front
+    const sse = await (await post(proxy.url, { model: 'gpt-5.5', stream: true, messages: [{ role: 'user', content: 'hi again' }] })).text();
+    const start = JSON.parse(sse.split('\n').find((l) => l.startsWith('data: ') && l.includes('message_start')).slice(6));
+    assert.ok(start.message.usage.input_tokens > 0, 'message_start carries an input estimate');
+    const delta = JSON.parse(sse.split('\n').find((l) => l.startsWith('data: ') && l.includes('message_delta')).slice(6));
+    assert.deepEqual(delta.usage, { input_tokens: 19, output_tokens: 18, cache_read_input_tokens: 5, cache_creation_input_tokens: 0 });
   } finally {
     await proxy.close();
     await upstream.close();

@@ -359,15 +359,20 @@ function num(v) {
 export class CodexReducer {
   #messageId;
   #model;
+  #inputEstimate;
   #started = false;
   #done = false;
   #nextIndex = 0;
   #open = new Map(); // output_index -> { index, kind, parts, argsSeen }
   #sawToolCall = false;
 
-  constructor({ messageId, model }) {
+  // inputEstimate: local estimate of the request size, shown in message_start
+  // so the client's context meter does not drop to 0 while streaming (the
+  // real numbers only arrive with response.completed).
+  constructor({ messageId, model, inputEstimate = 0 }) {
     this.#messageId = messageId;
     this.#model = model;
+    this.#inputEstimate = Number.isFinite(inputEstimate) && inputEstimate > 0 ? Math.round(inputEstimate) : 0;
   }
 
   get done() {
@@ -386,7 +391,7 @@ export class CodexReducer {
             event: 'message_start',
             data: {
               type: 'message_start',
-              message: { id: this.#messageId, type: 'message', role: 'assistant', model: this.#model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
+              message: { id: this.#messageId, type: 'message', role: 'assistant', model: this.#model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: this.#inputEstimate, output_tokens: 0 } },
             },
           },
         ];
@@ -513,8 +518,13 @@ export class CodexReducer {
       }
       out.push({ event: 'content_block_stop', data: { type: 'content_block_stop', index: b.index } });
     }
+    // Anthropic semantics: input_tokens is the UNCACHED input; the client adds
+    // cache_read + cache_creation to it for its context meter. The backend
+    // reports input_tokens as the total with cached_tokens as a subset.
     const u = ev.response?.usage ?? {};
-    const usage = { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_input_tokens: num(u.input_tokens_details?.cached_tokens) };
+    const total = num(u.input_tokens);
+    const cached = Math.min(total, num(u.input_tokens_details?.cached_tokens));
+    const usage = { input_tokens: total - cached, output_tokens: num(u.output_tokens), cache_read_input_tokens: cached, cache_creation_input_tokens: 0 };
     const stop_reason = incomplete ? 'max_tokens' : this.#sawToolCall ? 'tool_use' : 'end_turn';
     out.push({ event: 'message_delta', data: { type: 'message_delta', delta: { stop_reason, stop_sequence: null }, usage } });
     out.push({ event: 'message_stop', data: { type: 'message_stop' } });

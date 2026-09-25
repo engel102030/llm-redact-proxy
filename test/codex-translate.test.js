@@ -305,11 +305,15 @@ test('text turn: reasoning (empty summary) -> thinking block with signature, tex
     ['message_start', 'content_block_start', 'content_block_delta', 'content_block_stop', 'content_block_start', 'content_block_delta', 'content_block_delta', 'content_block_stop', 'message_delta', 'message_stop'],
   );
   assert.deepEqual(out[0].data.message, { id: 'msg_1', type: 'message', role: 'assistant', model: 'gpt-5.6-sol', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } });
+  // with an estimate the client context meter does not drop to 0 while streaming
+  const est = new CodexReducer({ messageId: 'm', model: 'gpt-5.6-sol', inputEstimate: 1234 }).push({ type: 'response.created', response: {} });
+  assert.deepEqual(est[0].data.message.usage, { input_tokens: 1234, output_tokens: 0 });
   assert.deepEqual(out[1].data, { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } });
   assert.deepEqual(out[2].data.delta, { type: 'signature_delta', signature: 'ENC1' });
   assert.deepEqual(out[4].data, { type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } });
   assert.deepEqual(out[5].data.delta, { type: 'text_delta', text: 'Hi' });
-  assert.deepEqual(out[8].data, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 24, output_tokens: 18, cache_read_input_tokens: 5 } });
+  // Anthropic semantics: input_tokens = uncached input; the client sums input + cache_read + cache_creation
+  assert.deepEqual(out[8].data, { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { input_tokens: 19, output_tokens: 18, cache_read_input_tokens: 5, cache_creation_input_tokens: 0 } });
   assert.equal(r.done, true);
   assert.deepEqual(r.push({ type: 'response.output_text.delta', output_index: 9, delta: 'late' }), []); // after done: ignored
 });
@@ -321,7 +325,7 @@ test('tool turn: function_call -> tool_use block with input_json deltas, stop_re
   assert.deepEqual(out[3].data.delta, { type: 'input_json_delta', partial_json: '"Paris"}' });
   assert.equal(out[4].event, 'content_block_stop');
   assert.equal(out[5].data.delta.stop_reason, 'tool_use');
-  assert.deepEqual(out[5].data.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0 });
+  assert.deepEqual(out[5].data.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
 });
 
 test('function_call whose arguments never streamed: the final arguments become one delta', () => {
@@ -421,7 +425,7 @@ test('accumulateMessage folds a stream into one Messages-API body', () => {
   assert.equal(tool.id, 'msg_1');
   assert.equal(tool.stop_reason, 'tool_use');
   assert.deepEqual(tool.content, [{ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'Paris' } }]);
-  assert.deepEqual(tool.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0 });
+  assert.deepEqual(tool.usage, { input_tokens: 10, output_tokens: 6, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
   const text = accumulateMessage(run(TEXT_TURN).out);
   assert.deepEqual(text.content, [{ type: 'thinking', thinking: '', signature: 'ENC1' }, { type: 'text', text: 'Hi.' }]);
   assert.throws(() => accumulateMessage([]), /before message_start/);

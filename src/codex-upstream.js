@@ -215,7 +215,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   // 200: a Responses SSE stream (the backend sends no content-type - do not
   // depend on it). Translate as it arrives.
   const messageId = `msg_${randomUUID().replace(/-/g, '')}`;
-  const reducer = new CodexReducer({ messageId, model: parsed.model });
+  const reducer = new CodexReducer({ messageId, model: parsed.model, inputEstimate: estimateTokens(translated) });
   const decoder = new SseDecoder();
   const rawDec = new StringDecoder('utf8');
   let respAcc = '';
@@ -224,8 +224,10 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   const noteUsage = (events) => {
     for (const e of events) {
       if (e.event === 'message_delta') {
-        usage.input_tokens = e.data.usage?.input_tokens ?? null;
-        usage.output_tokens = e.data.usage?.output_tokens ?? null;
+        // Dashboard counters show the TOTAL input (uncached + cached).
+        const u = e.data.usage ?? {};
+        usage.input_tokens = (u.input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+        usage.output_tokens = u.output_tokens ?? null;
       }
     }
   };
