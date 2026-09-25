@@ -318,3 +318,25 @@ test('/v1/models and count_tokens are answered locally, never touching the upstr
     await proxy2.close();
   }
 });
+
+test('session_id is stable per Claude Code session (derived from metadata.user_id) so the backend cache routes consistently', async () => {
+  const upstream = await createMockUpstream({ sse: true, sseEvents: sseFrames(TEXT_TURN), sseDelayMs: 1 });
+  const proxy = await boot(upstream.url, fakeAdapter());
+  try {
+    const body = (userId) => ({ model: 'gpt-5.5', stream: true, metadata: userId ? { user_id: userId } : undefined, messages: [{ role: 'user', content: 'hi' }] });
+    await (await post(proxy.url, body('session-A'))).text();
+    await (await post(proxy.url, body('session-A'))).text();
+    await (await post(proxy.url, body('session-B'))).text();
+    await (await post(proxy.url, body(null))).text();
+    await (await post(proxy.url, body(null))).text();
+    const sids = upstream.requests.map((r) => r.headers.session_id);
+    assert.match(sids[0], /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(sids[0], sids[1], 'same Claude Code session -> same session_id');
+    assert.notEqual(sids[0], sids[2], 'different session -> different session_id');
+    assert.notEqual(sids[3], sids[4], 'no metadata.user_id -> a fresh id per request');
+    assert.equal(sids[0].includes('session-A'), false);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});

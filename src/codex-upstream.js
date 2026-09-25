@@ -39,6 +39,14 @@ function readCapped(stream, cap) {
   });
 }
 
+// UUID-v4-shaped id derived from the (sha256 hex) prompt_cache_key.
+function sessionIdFor(cacheKey) {
+  if (typeof cacheKey !== 'string' || !/^[0-9a-f]{32,}$/.test(cacheKey)) return randomUUID();
+  const h = cacheKey;
+  const variant = '89ab'[parseInt(h[16], 16) % 4];
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
 function errorDetail(text) {
   try {
     const j = JSON.parse(text);
@@ -132,7 +140,10 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   const transport = up.url.protocol === 'https:' ? https : http;
   const basePath = up.url.pathname.replace(/\/$/, '');
   const upstreamPath = basePath.endsWith('/responses') ? basePath : `${basePath}/responses`;
-  const sessionId = randomUUID();
+  // One session id per Claude Code session (same source as prompt_cache_key),
+  // as the Codex CLI does per conversation: the backend routes the prompt
+  // cache by it. Random only when the client sent no metadata.user_id.
+  const sessionId = sessionIdFor(translated.prompt_cache_key);
   const attempt = ({ access, accountId }) =>
     new Promise((resolve, reject) => {
       const headers = codexRequestHeaders({ access, accountId, sessionId });
