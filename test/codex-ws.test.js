@@ -5,7 +5,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { connectWebSocket } from '../src/codex-ws.js';
-import { startWsServer, serverFrame, parseClientFrames } from './helpers/ws-server.js';
+import { startWsServer, serverFrame, parseClientFrames, acceptKey } from './helpers/ws-server.js';
+
+// RFC 6455 section 1.3 example: the accept key must match the real GUID.
+test('Sec-WebSocket-Accept follows the RFC 6455 vector', () => {
+  assert.equal(acceptKey('dGhlIHNhbXBsZSBub25jZQ=='), 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=');
+});
 
 const once = (emitter, event) => new Promise((resolve) => emitter.once(event, resolve));
 

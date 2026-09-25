@@ -355,6 +355,10 @@ function deliver({ source, res, clientStream, reducer, onEvent }) {
 const continuation = createContinuationRegistry();
 const sockets = new Map(); // pool key -> { ws, busy, idleTimer }
 let wsBackoffUntil = 0;
+let lastWsFailure = null; // { at, reason } - why the socket is not in use (log only, never a token)
+export function codexTransportStatus() {
+  return { sockets: sockets.size, backoffUntil: wsBackoffUntil, lastFailure: lastWsFailure };
+}
 
 function dropSocket(poolKey, { close = true } = {}) {
   const entry = sockets.get(poolKey);
@@ -394,6 +398,7 @@ async function acquireSocket({ poolKey, up, upstreamPath, access, accountId, ses
     ws = await connectWebSocket(url, { headers, timeoutMs });
   } catch (err) {
     wsBackoffUntil = nowMs + (err && err.status ? WS_REFUSED_BACKOFF_MS : WS_NETWORK_BACKOFF_MS);
+    lastWsFailure = { at: nowMs, reason: err && err.status ? `HTTP ${err.status}` : String(err && err.message ? err.message : err) };
     return null;
   }
   continuation.invalidate(poolKey); // a new socket starts a fresh continuation
@@ -613,6 +618,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
 
   // ---- HTTP transport ----
   note = `${note} http`;
+  if (profile.transport !== 'http' && lastWsFailure && Date.now() < wsBackoffUntil) note = `${note} (ws off: ${lastWsFailure.reason})`;
   const transport = up.url.protocol === 'https:' ? https : http;
   const upstreamBody = Buffer.from(JSON.stringify(translated), 'utf8');
   const attempt = ({ access, accountId }) =>

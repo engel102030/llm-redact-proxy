@@ -7,7 +7,7 @@ import tls from 'node:tls';
 import { EventEmitter } from 'node:events';
 import { createHash, randomBytes } from 'node:crypto';
 
-const GUID = '258EAFA5-E914-47DA-95CA-5AB5DC5AB11';
+const GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 export const MAX_MESSAGE_BYTES = 16 * 1024 * 1024;
 
 function encodeFrame(opcode, payload) {
