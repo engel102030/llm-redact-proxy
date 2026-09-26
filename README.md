@@ -199,6 +199,16 @@ backend counts the server-side context, cached); what you gain is upload and
 latency. Any refused upgrade or lost continuation falls back to plain HTTP /
 a full send automatically. `"transport": "http"` on the provider disables it.
 
+**Native compaction on /compact.** When Claude Code compacts (its summary
+prompt is recognized), the proxy first asks the backend for its own
+encrypted `compaction` item and keeps a native history (the most recent user
+messages within a 20k-token budget, then that item), then runs the summarize
+turn as usual so Claude Code stores its text summary. On the turns that
+follow, the "This session is being continued..." message carrying that
+summary is replaced by the native history: the model continues from its own
+compressed memory instead of a prose summary. If the native request fails,
+nothing changes.
+
 **Plan usage in the dashboard.** The backend reports the plan's rate limits on
 every response (`x-codex-*` headers: used percent of the 7-day window, reset
 time, plan type, credits). The proxy shows them on the provider row, in the

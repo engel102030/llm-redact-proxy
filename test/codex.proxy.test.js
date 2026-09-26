@@ -453,3 +453,80 @@ test('plan usage headers are reported to the adapter on every answered request a
     await upstream.close();
   }
 });
+
+// ---------------------------------------------------------------------------
+// Native compaction for /compact
+// ---------------------------------------------------------------------------
+import { COMPACT_MESSAGE_PREFIX, COMPACT_MESSAGE_TASK } from '../src/codex-compaction.js';
+
+const COMPACT_PROMPT = `${COMPACT_MESSAGE_PREFIX}\n\n${COMPACT_MESSAGE_TASK}, paying close attention to the user's explicit requests.`;
+const SUMMARY = 'The user asked about q1 and the assistant answered a1; the work is ongoing and nothing is blocked.';
+const summarySse = sseFrames([
+  { type: 'response.created', response: { id: 'resp_sum' } },
+  { type: 'response.output_item.added', output_index: 0, item: { id: 'm', type: 'message', role: 'assistant', content: [] } },
+  { type: 'response.output_text.delta', output_index: 0, delta: SUMMARY },
+  { type: 'response.output_item.done', output_index: 0, item: { id: 'm', type: 'message', role: 'assistant', content: [{ type: 'output_text', text: SUMMARY }] } },
+  { type: 'response.completed', response: { id: 'resp_sum', usage: { input_tokens: 50, output_tokens: 20 } } },
+]);
+const compactionSse = sseFrames([
+  { type: 'response.created', response: { id: 'resp_c' } },
+  { type: 'response.output_item.added', output_index: 0, item: { id: 'cp', type: 'compaction' } },
+  { type: 'response.output_item.done', output_index: 0, item: { id: 'cp', type: 'compaction', encrypted_content: 'ENC-COMP' } },
+  { type: 'response.completed', response: { id: 'resp_c', usage: { input_tokens: 40, output_tokens: 1 } } },
+]);
+const continued = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n${SUMMARY}`;
+
+test('/compact: the proxy fetches the native compaction item, serves the text summary, then swaps the summary for the native history on the next turn', async () => {
+  const upstream = await scriptedUpstream([sseResponder(compactionSse), sseResponder(summarySse), sseResponder(sseFrames(TEXT_TURN))]);
+  const proxy = await boot(upstream.url, fakeAdapter());
+  try {
+    const compactRes = await post(proxy.url, { model: 'gpt-5.5', stream: true, metadata: { user_id: 'sess-compact' }, system: 'be terse', messages: [{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }, { role: 'user', content: COMPACT_PROMPT }] });
+    assert.equal(compactRes.status, 200);
+    assert.ok((await compactRes.text()).includes(SUMMARY), 'the client still gets the text summary');
+    assert.equal(upstream.requests.length, 2);
+    const native = JSON.parse(upstream.requests[0].body);
+    assert.deepEqual(native.input.at(-1), { type: 'compaction_trigger' });
+    assert.equal('instructions' in native, false);
+    assert.equal(JSON.stringify(native).includes(COMPACT_MESSAGE_TASK), false, 'the compaction instruction is stripped');
+    assert.deepEqual(native.input.slice(0, 2).map((i) => i.type), ['message', 'message']);
+    const summarize = JSON.parse(upstream.requests[1].body);
+    assert.equal(summarize.instructions, 'be terse');
+    assert.ok(JSON.stringify(summarize).includes(COMPACT_MESSAGE_TASK), 'the summarize turn runs unchanged');
+    const s = await (await fetch(`${proxy.url}/__redact/stats.json`)).json();
+    assert.match(s.recent[0].note, /compact-native/);
+
+    const next = await post(proxy.url, { model: 'gpt-5.5', stream: true, metadata: { user_id: 'sess-compact' }, system: 'be terse', messages: [{ role: 'user', content: continued }, { role: 'user', content: 'next question' }] });
+    assert.equal(next.status, 200);
+    await next.text();
+    const replayed = JSON.parse(upstream.requests[2].body);
+    assert.deepEqual(replayed.input, [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'q1' }] },
+      { type: 'compaction', encrypted_content: 'ENC-COMP' },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'next question' }] },
+    ]);
+    assert.equal(JSON.stringify(replayed).includes(SUMMARY), false);
+    const s2 = await (await fetch(`${proxy.url}/__redact/stats.json`)).json();
+    assert.match(s2.recent[0].note, /compact-replay/);
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});
+
+test('/compact: when the native compaction fails the summarize turn still works and later turns are sent as-is', async () => {
+  const upstream = await scriptedUpstream([jsonResponder(400, { detail: 'no compaction for you' }), sseResponder(summarySse), sseResponder(sseFrames(TEXT_TURN))]);
+  const proxy = await boot(upstream.url, fakeAdapter());
+  try {
+    const compactRes = await post(proxy.url, { model: 'gpt-5.5', stream: true, metadata: { user_id: 'sess-nocompact' }, messages: [{ role: 'user', content: 'q1' }, { role: 'user', content: COMPACT_PROMPT }] });
+    assert.equal(compactRes.status, 200);
+    assert.ok((await compactRes.text()).includes(SUMMARY));
+    const next = await post(proxy.url, { model: 'gpt-5.5', stream: true, metadata: { user_id: 'sess-nocompact' }, messages: [{ role: 'user', content: continued }, { role: 'user', content: 'next' }] });
+    assert.equal(next.status, 200);
+    await next.text();
+    assert.equal(upstream.requests.length, 3);
+    assert.ok(JSON.parse(upstream.requests[2].body).input.some((i) => i.type === 'message' && JSON.stringify(i).includes(SUMMARY)), 'the summary text is sent as-is');
+  } finally {
+    await proxy.close();
+    await upstream.close();
+  }
+});

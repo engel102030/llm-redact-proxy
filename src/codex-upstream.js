@@ -25,6 +25,14 @@ import {
 import { modelsEnvelope } from './models.js';
 import { connectWebSocket } from './codex-ws.js';
 import { createContinuationRegistry } from './codex-continuation.js';
+import {
+  isCompactionTurn,
+  splitEnvelope,
+  stripCompactionInstruction,
+  buildNativeHistory,
+  summaryFromOutputItems,
+  createCompactionRegistry,
+} from './codex-compaction.js';
 
 export const CODEX_MAX_BUFFERED_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const CODEX_MAX_ERROR_BODY_BYTES = 16 * 1024;
@@ -353,6 +361,40 @@ function deliver({ source, res, clientStream, reducer, onEvent }) {
 // continuation registry, and a backoff after a refused upgrade.
 // ---------------------------------------------------------------------------
 const continuation = createContinuationRegistry();
+const compaction = createCompactionRegistry();
+
+// Ask the backend for its compaction item over plain HTTP: the conversation
+// without the compaction instruction, plus the trigger, no instructions.
+async function requestNativeCompaction({ post, translated, timeoutMs }) {
+  const { conversation } = splitEnvelope(translated.input);
+  const stripped = stripCompactionInstruction(conversation);
+  const body = { ...translated, input: [...stripped, { type: 'compaction_trigger' }], tools: [], tool_choice: 'auto' };
+  delete body.instructions;
+  let res;
+  try {
+    res = await post(Buffer.from(JSON.stringify(body), 'utf8'));
+  } catch {
+    return null;
+  }
+  if ((res.statusCode ?? 0) !== 200) {
+    res.resume();
+    return null;
+  }
+  const text = await readCapped(res, CODEX_MAX_BUFFERED_RESPONSE_BYTES);
+  let item = null;
+  try {
+    const decoder = new SseDecoder();
+    for (const ev of [...decoder.push(text), ...decoder.flush()]) {
+      if (ev && ev.type === 'response.output_item.done' && ev.item && ev.item.type === 'compaction' && typeof ev.item.encrypted_content === 'string') {
+        item = { type: 'compaction', encrypted_content: ev.item.encrypted_content };
+      }
+    }
+  } catch {
+    return null;
+  }
+  if (!item) return null;
+  return { nativeHistory: buildNativeHistory(stripped, item) };
+}
 const sockets = new Map(); // pool key -> { ws, busy, idleTimer }
 let wsBackoffUntil = 0;
 let lastWsFailure = null; // { at, reason } - why the socket is not in use (log only, never a token)
@@ -490,7 +532,20 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
     sendJson(400, { error: { type: 'invalid_request_error', message: `codex translation failed: ${err.message}` } });
     return;
   }
-  note = `codex model=${translated.model} effort=${translated.reasoning?.effort ?? '-'}`;
+  // Native compaction: a /compact turn is recognized before anything else;
+  // any other turn may get the stored native history in place of the text
+  // summary Claude Code replays.
+  const convKey = translated.prompt_cache_key ? `${up.url.host}|${translated.prompt_cache_key}` : null;
+  const compactionTurn = convKey !== null && isCompactionTurn(translated);
+  let compactionReplayed = false;
+  if (convKey && !compactionTurn) {
+    const replayed = compaction.replay(convKey, translated);
+    if (replayed) {
+      translated = replayed;
+      compactionReplayed = true;
+    }
+  }
+  note = `codex model=${translated.model} effort=${translated.reasoning?.effort ?? '-'}${compactionReplayed ? ' compact-replay' : ''}`;
   const clientStream = parsed.stream === true;
   // Overwrite the inspector copy: THIS is what actually leaves the machine.
   stats.rememberReq(entry?.id, JSON.stringify(translated));
@@ -509,6 +564,43 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   const basePath = up.url.pathname.replace(/\/$/, '');
   const upstreamPath = basePath.endsWith('/responses') ? basePath : `${basePath}/responses`;
   const sessionId = sessionIdFor(translated.prompt_cache_key);
+  const transport = up.url.protocol === 'https:' ? https : http;
+  const attempt = ({ access, accountId }, bodyBuffer) =>
+    new Promise((resolve, reject) => {
+      const headers = codexRequestHeaders({ access, accountId, sessionId });
+      headers.host = up.url.host;
+      headers['content-length'] = String(bodyBuffer.length);
+      const r = transport.request(
+        {
+          protocol: up.url.protocol,
+          hostname: up.url.hostname,
+          port: up.url.port || (up.url.protocol === 'https:' ? 443 : 80),
+          method: 'POST',
+          path: upstreamPath,
+          headers,
+          timeout: timeoutMs,
+        },
+        resolve,
+      );
+      r.on('timeout', () => r.destroy(new Error('upstream timeout')));
+      r.on('error', reject);
+      r.end(bodyBuffer);
+    });
+  if (compactionTurn) {
+    const native = await requestNativeCompaction({ post: (buf) => attempt(creds, buf), translated, timeoutMs });
+    if (native) {
+      compaction.begin(convKey, { model: translated.model, nativeHistory: native.nativeHistory });
+      note = `${note} compact-native`;
+    } else {
+      note = `${note} compact-native-failed`;
+    }
+  }
+  // After a successful summarize turn, the text the model wrote anchors the
+  // native history for the turns that follow.
+  const anchorCompaction = () => {
+    if (!compactionTurn) return;
+    compaction.anchor(convKey, { model: translated.model, summaryText: summaryFromOutputItems(turn.outputItems) });
+  };
   const messageId = `msg_${randomUUID().replace(/-/g, '')}`;
   const newReducer = () => new CodexReducer({ messageId, model: parsed.model, inputEstimate: estimateInput(translated) });
   const onRaw = (text, bytes) => {
@@ -551,7 +643,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   };
 
   // ---- WebSocket transport (default): one socket per conversation ----
-  const poolKey = translated.prompt_cache_key ? `${up.url.host}|${translated.prompt_cache_key}` : null;
+  const poolKey = convKey;
   if (profile.transport !== 'http' && poolKey) {
     const socket = await acquireSocket({ poolKey, up, upstreamPath, access: creds.access, accountId: creds.accountId, sessionId, timeoutMs: Math.min(timeoutMs, 20_000), nowMs: Date.now() });
     if (socket) {
@@ -586,6 +678,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
         if (turn.responseId) continuation.commit(poolKey, { translated, responseId: turn.responseId, outputItems: turn.outputItems });
         else continuation.invalidate(poolKey);
         armIdle(poolKey);
+        anchorCompaction();
         finishTurn(200);
         return;
       }
@@ -619,33 +712,11 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
   // ---- HTTP transport ----
   note = `${note} http`;
   if (profile.transport !== 'http' && lastWsFailure && Date.now() < wsBackoffUntil) note = `${note} (ws off: ${lastWsFailure.reason})`;
-  const transport = up.url.protocol === 'https:' ? https : http;
   const upstreamBody = Buffer.from(JSON.stringify(translated), 'utf8');
-  const attempt = ({ access, accountId }) =>
-    new Promise((resolve, reject) => {
-      const headers = codexRequestHeaders({ access, accountId, sessionId });
-      headers.host = up.url.host;
-      headers['content-length'] = String(upstreamBody.length);
-      const r = transport.request(
-        {
-          protocol: up.url.protocol,
-          hostname: up.url.hostname,
-          port: up.url.port || (up.url.protocol === 'https:' ? 443 : 80),
-          method: 'POST',
-          path: upstreamPath,
-          headers,
-          timeout: timeoutMs,
-        },
-        resolve,
-      );
-      r.on('timeout', () => r.destroy(new Error('upstream timeout')));
-      r.on('error', reject);
-      r.end(upstreamBody);
-    });
 
   let upstreamRes;
   try {
-    upstreamRes = await attempt(creds);
+    upstreamRes = await attempt(creds, upstreamBody);
     if ((upstreamRes.statusCode ?? 0) === 401) {
       // Expired/revoked access token: refresh once and replay.
       upstreamRes.resume();
@@ -659,7 +730,7 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
         sendJson(502, { error: { type: 'no_codex_oauth', message: 'ChatGPT token refresh failed - log in again from the dashboard' } });
         return;
       }
-      upstreamRes = await attempt(next);
+      upstreamRes = await attempt(next, upstreamBody);
       if ((upstreamRes.statusCode ?? 0) === 401) {
         upstreamRes.resume();
         sendJson(502, { error: { type: 'no_codex_oauth', message: 'the Codex backend rejected the refreshed token - log in again from the dashboard' } });
@@ -699,6 +770,8 @@ export async function handleCodexUpstream({ req, res, up, entry, stats, t0, body
     reducer: newReducer(),
     onEvent,
   });
-  if (result.sent) finishTurn(result.status);
-  else failJson(result);
+  if (result.sent) {
+    if (result.status === 200) anchorCompaction();
+    finishTurn(result.status);
+  } else failJson(result);
 }
