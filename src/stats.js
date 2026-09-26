@@ -17,6 +17,27 @@ export function createStats({ log = console.log } = {}) {
   const MAX_RECENT = 200;
   let seq = 0;
 
+  // Debug capture: the exact forwarded REQUEST (already redacted) and the raw
+  // upstream RESPONSE (before any {{NAME}} restore), stored in FULL for the last
+  // BODY_KEEP requests so the panel can show them on click. Neither holds a user
+  // secret - the request left redacted, the response is vendor output. Only the
+  // request count is bounded (last 30); bodies are kept complete. Served solely
+  // through the guarded /__redact/inspect endpoint.
+  const bodies = new Map(); // id -> { req, resp }
+  const BODY_KEEP = 30;
+  function rememberReq(id, text) {
+    if (id == null) return;
+    bodies.set(id, { req: String(text ?? ''), resp: '' });
+    while (bodies.size > BODY_KEEP) bodies.delete(bodies.keys().next().value);
+  }
+  function rememberResp(id, text) {
+    const b = bodies.get(id);
+    if (b) b.resp = String(text ?? '');
+  }
+  function getBodies(id) {
+    return bodies.get(Number(id)) ?? null;
+  }
+
   const safePath = (p) => String(p ?? '-').split('?')[0];
 
   // Opens a request record (called when the request is redacted/forwarded or
@@ -68,18 +89,21 @@ export function createStats({ log = console.log } = {}) {
     return entry;
   }
 
-  // Completes a record once the upstream response is done.
-  function finish(entry, { status = null, durationMs = null, inputTokens = null, outputTokens = null, respBytes = null } = {}) {
+  // Completes a record once the upstream response is done. `note` is a short
+  // free-text tag for the log line (e.g. the codex model + effort) - never a
+  // value from the body.
+  function finish(entry, { status = null, durationMs = null, inputTokens = null, outputTokens = null, respBytes = null, note = null } = {}) {
     if (!entry) return;
     entry.status = status;
     entry.durationMs = durationMs;
     entry.inputTokens = inputTokens;
     entry.outputTokens = outputTokens;
     entry.respBytes = respBytes;
+    entry.note = note;
     if (inputTokens) totals.inputTokens += inputTokens;
     if (outputTokens) totals.outputTokens += outputTokens;
     const tok = inputTokens || outputTokens ? ` tok in ${inputTokens ?? 0}/out ${outputTokens ?? 0}` : '';
-    log(`[redact] ${entry.method} ${entry.path} -> ${status ?? '-'} ${durationMs ?? '?'}ms${tok}`);
+    log(`[redact] ${entry.method} ${entry.path} -> ${status ?? '-'} ${durationMs ?? '?'}ms${tok}${note ? ` ${note}` : ''}`);
   }
 
   // Open feed: NEVER includes matched values. Strips captures from every entry.
@@ -91,6 +115,17 @@ export function createStats({ log = console.log } = {}) {
       perRule: Object.fromEntries(perRule),
       recent: recent.map(({ captures, ...rest }) => rest),
     };
+  }
+
+  // Clear all counters, the recent-request log, per-rule tallies and the kept
+  // bodies. Triggered from the dashboard "reset" button. Uptime/startedAt are
+  // left as the process boot time (not a counter).
+  function reset() {
+    for (const k of Object.keys(totals)) totals[k] = 0;
+    perRule.clear();
+    recent.length = 0;
+    bodies.clear();
+    seq = 0;
   }
 
   // Guarded reveal: the actual matched values. Only served to the local panel
@@ -111,5 +146,5 @@ export function createStats({ log = console.log } = {}) {
     };
   }
 
-  return { record, finish, toJSON, revealValues };
+  return { record, finish, toJSON, revealValues, rememberReq, rememberResp, getBodies, reset };
 }

@@ -2,7 +2,7 @@
 import { createProxyServer } from '../../src/proxy.js';
 import { createStats } from '../../src/stats.js';
 
-export async function startProxy({ upstreamUrl, redactor, configOverrides = {} }) {
+export async function startProxy({ upstreamUrl, redactor, configOverrides = {}, serverOptions = {} }) {
   const config = {
     listenHost: '127.0.0.1',
     listenPort: 0,
@@ -14,7 +14,7 @@ export async function startProxy({ upstreamUrl, redactor, configOverrides = {} }
     ...configOverrides,
   };
   const stats = createStats({ log: () => {} });
-  const server = createProxyServer({ config, redactor, stats });
+  const server = createProxyServer({ config, redactor, stats, ...serverOptions });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   const { port } = server.address();
   return {

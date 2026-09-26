@@ -176,6 +176,73 @@ It is **off by default**: restoring re-hydrates a secret into this machine's
 on-disk transcript and screen, so you opt in per provider. When on, the
 system-prompt notice teaches the model to use `{{NAME}}`.
 
+### Codex (ChatGPT subscription) provider — `codex-oauth`
+
+Use the GPT models of a ChatGPT Plus/Pro plan from an Anthropic-format client
+(Claude Code, Overclock) through the proxy:
+
+1. Dashboard → Providers → **+ New provider**: id `codex`, auth `codex-oauth`
+   (the URL can stay blank: it defaults to `https://chatgpt.com/backend-api/codex`). Save.
+2. **edit** the provider → **Login with ChatGPT**. A browser tab opens on
+   auth.openai.com; the proxy listens on `localhost:1455` for the callback (the
+   same port the Codex CLI uses). Tokens are stored in `providers.json` (chmod 600).
+3. **activate** it. `/v1/models` now lists the plan's models. `/effort` in Claude
+   Code maps low/medium/high/max → low/medium/xhigh/max (edit `effortMap` in
+   `providers.json` to change it).
+
+**WebSocket transport (on by default).** Like the Codex CLI, the proxy talks
+to the backend over one WebSocket per conversation (`openai-beta:
+responses_websockets`): the first turn sends everything, following turns send
+only the new items plus `previous_response_id`, so a tool call no longer
+uploads the whole transcript. Token usage is the same as a full resend (the
+backend counts the server-side context, cached); what you gain is upload and
+latency. Any refused upgrade or lost continuation falls back to plain HTTP /
+a full send automatically. `"transport": "http"` on the provider disables it.
+
+**Native compaction on /compact.** When Claude Code compacts (its summary
+prompt is recognized), the proxy first asks the backend for its own
+encrypted `compaction` item and keeps a native history (the most recent user
+messages within a 20k-token budget, then that item), then runs the summarize
+turn as usual so Claude Code stores its text summary. On the turns that
+follow, the "This session is being continued..." message carrying that
+summary is replaced by the native history: the model continues from its own
+compressed memory instead of a prose summary. If the native request fails,
+nothing changes.
+
+**Plan usage in the dashboard.** The backend reports the plan's rate limits on
+every response (`x-codex-*` headers: used percent of the 7-day window, reset
+time, plan type, credits). The proxy shows them on the provider row, in the
+editor status line and as a chip for the active provider, and notes
+`quota N%` on each request's log line.
+
+**Context pruning (on by default).** The Codex backend has no equivalent of
+Anthropic's tool-result clearing, so on long sessions every tool call would
+re-send hundreds of kilotokens of stale tool output plus the encrypted
+reasoning of every past turn. The proxy prunes what the model sees (your
+transcript is untouched): once a request exceeds `triggerTokens`, the oldest
+tool results are replaced by `[tool result cleared to save context]` (the last
+`keepToolUses` stay intact, cleared in batches of `clearAtLeastTokens` so the
+prompt cache stays stable), and only the current tool loop's reasoning is
+replayed. Per provider in `providers.json`:
+
+```json
+"prune": { "enabled": true, "triggerTokens": 120000, "keepToolUses": 8, "clearAtLeastTokens": 40000, "reasoning": "turn" }
+```
+
+The proxy announces itself as Codex CLI `0.156.1` (`CODEX_CLIENT_VERSION` to
+override): the backend hides newer models from older client versions, so bump
+it when a new GPT generation does not show up in **fetch models**.
+
+One provider per ChatGPT account; switch with **activate**. Redaction runs on
+the Anthropic body before translation, exactly as for every other provider,
+and the token only ever goes to chatgpt.com. Reasoning summaries come back as
+thinking blocks (the encrypted reasoning rides in the block signature so the
+next turn can continue it). Images in tool results (screenshots) and PDF
+attachments reach the model; Claude Code's WebSearch maps to the Codex hosted
+web search. `max_tokens`, `temperature` and friends are dropped: the backend
+has no equivalent. Using a subscription token outside
+the Codex CLI may violate OpenAI's terms — your call.
+
 ## Dashboard
 
 `http://127.0.0.1:8788/__redact/` — provider configuration, totals, per-rule

@@ -12,3 +12,9 @@ secrets.local.*
 
 # internal project instructions - kept local, not published
 CLAUDE.md
+
+# Playwright MCP screenshots/traces
+.playwright-mcp/
+
+# superpowers plan workspaces (ledgers, briefs) - scratch, never committed
+.superpowers/
